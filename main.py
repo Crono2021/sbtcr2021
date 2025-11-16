@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 # ======================================================
-#   VARIABLES DE ENTORNO
+#   VARIABLES DE ENTORNOK
 # ======================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
