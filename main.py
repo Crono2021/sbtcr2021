@@ -18,6 +18,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
+# Carpeta PERSISTENTE de Railway
 DATA_DIR = Path("/app/storage/topics")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -25,7 +26,7 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 
 
 # ---------------------------------------------------------
-#   CARGA Y GUARDA ARCHIVO DE TEMAS
+#   CARGA / GUARDA TEMAS
 # ---------------------------------------------------------
 def load_topics():
     if not TOPICS_FILE.exists():
@@ -33,7 +34,7 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {}
 
 
@@ -43,45 +44,51 @@ def save_topics(data):
 
 
 # ---------------------------------------------------------
-#   DETECTAR TEMAS NUEVOS Y GUARDAR MENSAJES
+#   DETECTAR TEMAS Y GUARDAR MENSAJES
 # ---------------------------------------------------------
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if msg is None:
         return
 
+    # Solo el grupo configurado
     if msg.chat.id != GROUP_ID:
         return
 
+    # Solo mensajes dentro de un tema
     if msg.message_thread_id is None:
-        return  # mensaje fuera de topic
+        return
 
     topic_id = str(msg.message_thread_id)
-
     topics = load_topics()
 
+    # --- NOMBRE REAL DEL TEMA ---
     if topic_id not in topics:
-        # Obtener nombre real del tema
-        if msg.reply_to_message and msg.reply_to_message.forum_topic_created:
-            topic_name = msg.reply_to_message.forum_topic_created.name
+        # Si este mensaje es el de creación de tema, trae forum_topic_created
+        if msg.forum_topic_created:
+            topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
         else:
+            # Por si acaso, nombre genérico (solo si el bot no vio el mensaje de creación)
             topic_name = f"Tema {topic_id}"
 
-        topics[topic_id] = {
-            "name": topic_name,
-            "messages": []
-        }
+        topics[topic_id] = {"name": topic_name, "messages": []}
 
-    # Guardar el mensaje nuevo del tema
-    topics[topic_id]["messages"].append({
-        "id": msg.message_id
-    })
+        # Solo avisamos una vez cuando detectamos el tema
+        try:
+            await msg.reply_text(
+                f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
+    # --- GUARDAR ESTE MENSAJE ---
+    topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
 
 # ---------------------------------------------------------
-#   COMANDO /TEMAS
+#   /TEMAS -> LISTA CON BOTONES
 # ---------------------------------------------------------
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = load_topics()
@@ -90,9 +97,10 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No hay temas detectados aún.")
         return
 
-    keyboard = []
-    for tid, data in topics.items():
-        keyboard.append([InlineKeyboardButton(data["name"], callback_data=f"t:{tid}")])
+    keyboard = [
+        [InlineKeyboardButton(data["name"], callback_data=f"t:{tid}")]
+        for tid, data in topics.items()
+    ]
 
     await update.message.reply_text(
         "📚 <b>Temas detectados:</b>",
@@ -102,7 +110,7 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   REENVIAR TODOS LOS MENSAJES GUARDADOS DE UN TEMA
+#   CALLBACK -> REENVIAR CONTENIDO DEL TEMA
 # ---------------------------------------------------------
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -112,7 +120,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
-
     if topic_id not in topics:
         await query.edit_message_text("❌ Tema no encontrado.")
         return
@@ -120,34 +127,38 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("📨 Enviando contenido del tema...")
 
     bot = context.bot
+    count = 0
 
     for msg_info in topics[topic_id]["messages"]:
         try:
+            # copy_message => SIN remitente (“enviado por el bot”)
             await bot.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=GROUP_ID,
                 message_id=msg_info["id"],
-                protect_content=True   # elimina remitente
+                protect_content=True,  # oculta datos de origen
             )
-        except:
-            pass
+            count += 1
+        except Exception as e:
+            print(f"[ERROR] copiando mensaje {msg_info['id']}: {e}")
 
     await bot.send_message(
         chat_id=query.from_user.id,
-        text="✔ Fin del contenido del tema."
+        text=f"✔ Fin del contenido del tema. ({count} mensajes)",
     )
 
 
 # ---------------------------------------------------------
-#   /start
+#   /START
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Bot activo.\n"
+        f"• Grupo configurado: <code>{GROUP_ID}</code>\n"
         "• Detecta nuevos temas automáticamente.\n"
-        "• Reenvía todos los mensajes del tema a tu privado.\n"
-        "• Usa /temas para ver la lista completa.",
-        parse_mode="HTML"
+        "• Guarda todos los mensajes que se envían dentro del tema.\n"
+        "• Usa /temas en privado para recibir su contenido.",
+        parse_mode="HTML",
     )
 
 
@@ -160,6 +171,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CallbackQueryHandler(send_topic))
+    # Capturamos TODO lo que no sea comando para guardar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), detect))
 
     print("BOT LISTO ✔")
