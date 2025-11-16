@@ -18,9 +18,10 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # ID del admin autorizado
 
 # ---------------------------------------------------------
-#   RUTA PERSISTENTE DE RAILWAY
+#   RUTA PERSISTENTE
 # ---------------------------------------------------------
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -34,7 +35,6 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 def load_topics():
     if not TOPICS_FILE.exists():
         return {}
-
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -55,16 +55,18 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg is None:
         return
 
+    # Solo el grupo configurado
     if msg.chat.id != GROUP_ID:
         return
 
+    # Solo mensajes dentro de un tema
     if msg.message_thread_id is None:
         return
 
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Nuevo tema
+    # Crear entrada del tema si no existe
     if topic_id not in topics:
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
@@ -73,21 +75,22 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
+        # Avisar solo una vez al crear/registrar el tema
         try:
             await msg.reply_text(
                 f"📄 Tema detectado y guardado:\n<b>{html.escape(topic_name)}</b>",
                 parse_mode="HTML",
             )
-        except:
+        except Exception:
             pass
 
-    # Guardar mensaje
+    # Guardar el ID del mensaje dentro del tema
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
 
 # ---------------------------------------------------------
-#   /TEMAS -> LISTA CON BOTONES
+#   /TEMAS -> LISTA CON BOTONES (TODOS PUEDEN USARLO)
 # ---------------------------------------------------------
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -105,7 +108,13 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for tid, data in topics.items():
-            safe_name = html.escape(data["name"])
+            # defensivo por si hay datos antiguos
+            if isinstance(data, dict) and "name" in data:
+                name = data["name"]
+            else:
+                name = str(data)
+
+            safe_name = html.escape(name)
             keyboard.append(
                 [InlineKeyboardButton(f"📌 {safe_name}", callback_data=f"t:{tid}")]
             )
@@ -122,7 +131,7 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   CALLBACK → ENVIAR CONTENIDO
+#   CALLBACK → ENVIAR CONTENIDO DEL TEMA (TODOS)
 # ---------------------------------------------------------
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -148,7 +157,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=query.from_user.id,
                 from_chat_id=GROUP_ID,
                 message_id=msg_info["id"],
-                protect_content=True,
+                protect_content=True,  # oculta info de origen
             )
             count += 1
         except Exception as e:
@@ -161,10 +170,15 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   /BORRARTEMA -> LISTA DE TEMAS
+#   /BORRARTEMA -> SOLO ADMIN (OWNER_ID)
 # ---------------------------------------------------------
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     chat = update.effective_chat
+
+    if user.id != OWNER_ID:
+        await chat.send_message("⛔ No tienes permiso para usar este comando.")
+        return
 
     if chat.type != "private":
         await update.message.reply_text("Usa /borrartema en privado.")
@@ -178,7 +192,8 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for tid, data in topics.items():
-        safe_name = html.escape(data["name"])
+        name = data["name"] if isinstance(data, dict) and "name" in data else str(data)
+        safe_name = html.escape(name)
         keyboard.append(
             [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
         )
@@ -191,10 +206,16 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   CALLBACK → ELIMINAR TEMA
+#   CALLBACK → ELIMINAR TEMA (SOLO ADMIN)
 # ---------------------------------------------------------
 async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = query.from_user
+
+    if user.id != OWNER_ID:
+        await query.answer("⛔ No tienes permiso.", show_alert=True)
+        return
+
     await query.answer()
 
     _, topic_id = query.data.split(":")
@@ -206,7 +227,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Ese tema ya no existe.")
         return
 
-    deleted_name = topics[topic_id]["name"]
+    deleted_name = topics[topic_id]["name"] if "name" in topics[topic_id] else topic_id
 
     del topics[topic_id]
     save_topics(topics)
@@ -218,58 +239,33 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   /REINICIAR_DB → BORRAR TODO
+#   /REINICIAR_DB -> SOLO ADMIN (OWNER_ID)
 # ---------------------------------------------------------
 async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     chat = update.effective_chat
 
-    if chat.type != "private":
-        await update.message.reply_text("Usa /reiniciar_db en privado.")
+    if user.id != OWNER_ID:
+        await chat.send_message("⛔ No tienes permiso para usar este comando.")
         return
 
-    await chat.send_message(
-        "⚠️ <b>ATENCIÓN</b>\n"
-        "Esto borrará TODOS los temas guardados.\n\n"
-        "Confirma para continuar:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🗑 Confirmar borrado total", callback_data="reset:confirm")]
-        ])
-    )
-
-
-async def confirmar_reinicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    try:
-        if TOPICS_FILE.exists():
-            TOPICS_FILE.unlink()
-
-        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-            f.write("{}")
-
-        await query.edit_message_text(
-            "🧹 Base de datos reiniciada correctamente.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await query.edit_message_text(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
+    # Vaciar temas
+    save_topics({})
+    await chat.send_message("✅ Base de datos de temas reiniciada.")
 
 
 # ---------------------------------------------------------
-#   /START
+#   /START (TODOS) → MENSAJE CORTO + EJECUTAR /TEMAS
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Bot activo.\n"
-        f"• Grupo configurado: <code>{GROUP_ID}</code>\n"
-        "• Detecta y guarda temas automáticamente.\n"
-        "• Usa /temas para verlos.\n"
-        "• Usa /borrartema para eliminar uno.\n"
-        "• Usa /reiniciar_db para borrar todos.",
-        parse_mode="HTML",
-    )
+    chat = update.effective_chat
+
+    # Mensaje simple para cualquier usuario
+    await chat.send_message("¡Hola! Selecciona una serie para ver.")
+
+    # Mostrar directamente la lista de temas (si está en privado)
+    if chat.type == "private":
+        await temas(update, context)
 
 
 # ---------------------------------------------------------
@@ -278,15 +274,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Comandos para todos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
+
+    # Comandos solo admin
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
+    # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
-    app.add_handler(CallbackQueryHandler(confirmar_reinicio, pattern="^reset:confirm$"))
 
+    # Guardar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
