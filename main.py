@@ -13,7 +13,7 @@ from telegram.ext import (
 
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
-# Crear carpeta del volumen si no existe (Railway lo necesita)
+# Crear carpeta si no existe (necesario en Railway)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
@@ -56,17 +56,11 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_name = update.message.forum_topic_created.name
 
     await save_topic(topic_id, topic_name)
-    await update.message.reply_text(f"Nuevo tema registrado: {topic_name}")
+    await update.message.reply_text(f"Tema registrado: {topic_name}")
 
 
-# ==========================
-#   DETECCIÓN DE EVENTOS (sin filtros inexistentes)
-# ==========================
-
+# Detectar eventos sin filtro especial
 async def topic_created_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Se ejecuta ante cualquier mensaje y detecta si es un mensaje de creación de tema.
-    """
     if update.message and update.message.forum_topic_created:
         await topic_created(update, context)
 
@@ -113,7 +107,7 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-#   SELECCIONAR TEMA (BOTONES)
+#   SELECCIONAR TEMA
 # ==========================
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -132,7 +126,6 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.reply_text("Enviando contenido...")
 
-    # Reenviar mensajes sin mostrar remitente
     async for msg in context.bot.get_chat_history(
         chat_id=group_id,
         message_thread_id=topic_id,
@@ -144,20 +137,21 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from_chat_id=group_id,
                 message_id=msg.message_id
             )
-        except Exception:
+        except:
             pass
 
 
 # ==========================
-#   ARRANQUE DEL BOT
+#   MAIN
 # ==========================
 
-async def run_bot():
-    await init_db()
+if __name__ == "__main__":
+    # Inicializar base de datos
+    asyncio.run(init_db())
 
     token = os.getenv("BOT_TOKEN")
     if not token:
-        raise RuntimeError("Error: BOT_TOKEN no está configurado en Railway.")
+        raise RuntimeError("Error: BOT_TOKEN no está en Railway")
 
     app = ApplicationBuilder().token(token).build()
 
@@ -168,8 +162,4 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.ALL, topic_created_filter))
 
     print("Bot corriendo en Railway...")
-    await app.run_polling()
-
-
-if __name__ == "__main__":
-    asyncio.run(run_bot())
+    app.run_polling()
