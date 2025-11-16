@@ -17,11 +17,13 @@ from telegram.ext import (
 )
 
 # ======================================================
-#   VARIABLES DE ENTORNO
+#   VARIABLES
 # ======================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-OWNER_ID = int(os.getenv("OWNER_ID"))  # <<--- AÑADE ESTO EN RAILWAY
+
+# SOLO ESTE USER PUEDE BORRAR
+OWNER_ID = 5540195020
 
 # Carpeta persistente
 DATA_DIR = Path("/data")
@@ -64,7 +66,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Detectar nombre real del tema (NO escapamos aquí)
+    # Guardamos el nombre EXACTO sin escape
     if topic_id not in topics:
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
@@ -78,13 +80,12 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Guardar mensaje
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
 
 # ======================================================
-#   /TEMAS → LISTA CON BOTONES
+#   /TEMAS → LISTA
 # ======================================================
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -101,9 +102,9 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for tid, data in topics.items():
-            safe_name = escape(data["name"])  # escapado SOLO al mostrar
+            shown_name = escape(data["name"])   # escapado SOLO al mostrar
             keyboard.append(
-                [InlineKeyboardButton(f"📌 {safe_name}", callback_data=f"t:{tid}")]
+                [InlineKeyboardButton(f"📌 {shown_name}", callback_data=f"t:{tid}")]
             )
 
         await chat.send_message(
@@ -172,9 +173,9 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for tid, data in topics.items():
-        safe_name = escape(data["name"])
+        shown_name = escape(data["name"])
         keyboard.append(
-            [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
+            [InlineKeyboardButton(f"❌ {shown_name}", callback_data=f"del:{tid}")]
         )
 
     await chat.send_message(
@@ -185,7 +186,7 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   CALLBACK borrar tema
+#   CALLBACK eliminar tema
 # ======================================================
 async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -196,7 +197,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     topics = load_topics()
     if topic_id not in topics:
-        await query.edit_message_text("❌ Ese tema ya no existe.")
+        await query.edit_message_text("❌ Tema no existe.")
         return
 
     deleted_name = topics[topic_id]["name"]
@@ -230,7 +231,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-    # Ejecuta automáticamente /temas
     return await temas(update, context)
 
 
@@ -247,11 +247,9 @@ def main():
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
-    # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
 
-    # Detectar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
