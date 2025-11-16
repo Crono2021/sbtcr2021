@@ -19,13 +19,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
 # ---------------------------------------------------------
-#   *** ÚNICO CAMBIO IMPORTANTE ***
-#   Ruta REAL del volumen en Railway: /data/
+#   SISTEMA DE PATH SEGURO QUE NO ROMPE NADA
 # ---------------------------------------------------------
-DATA_DIR = Path("/data/topics")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-TOPICS_FILE = DATA_DIR / "topics.json"
+if Path("/data").exists():
+    BASE_DIR = Path("/data/topics")
+else:
+    BASE_DIR = Path("/app/storage/topics")
+
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+TOPICS_FILE = BASE_DIR / "topics.json"
+print(f"📁 Usando directorio de almacenamiento: {BASE_DIR}")
 
 
 # ---------------------------------------------------------
@@ -88,7 +92,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   /TEMAS -> LISTA DE TEMAS
+#   /TEMAS -> LISTA CON BOTONES
 # ---------------------------------------------------------
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = load_topics()
@@ -116,8 +120,8 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    _, topic_id = query.data.split(":")
-    topic_id = topic_id.strip()
+    _, topic_id_raw = query.data.split(":")
+    topic_id = topic_id_raw.strip()
 
     topics = load_topics()
     if topic_id not in topics:
@@ -173,6 +177,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), detect))
 
     print("BOT LISTO ✔")
+    print(f"🗂 Archivo de temas: {TOPICS_FILE}")
     app.run_polling()
 
 
