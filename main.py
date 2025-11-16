@@ -10,9 +10,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
 # -------------------------------
-# RUTA PERSISTENTE EN RAILWAY
+# RUTA PERSISTENTE (Railway monta en /data)
 # -------------------------------
-BASE_DIR = "/data"
+BASE_DIR = "/data" 
 TOPICS_FILE = f"{BASE_DIR}/topics.json"
 MSG_DIR = f"{BASE_DIR}/messages"
 
@@ -25,11 +25,8 @@ if not os.path.exists(TOPICS_FILE):
 
 
 def load_topics():
-    try:
-        with open(TOPICS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+    with open(TOPICS_FILE, "r") as f:
+        return json.load(f)
 
 
 def save_topics(data):
@@ -60,7 +57,7 @@ async def start(update: Update, context: CallbackContext):
     if update.effective_chat.type == "private":
         await update.message.reply_text(
             "🤖 ¡Hola!\n"
-            "El bot reenviará mensajes desde temas del grupo configurado.\n\n"
+            "El bot reenviará mensajes desde los temas del grupo configurado.\n\n"
             "• Crea un tema nuevo en el grupo\n"
             "• El bot guardará su nombre real\n"
             "• Luego podrás pedir sus mensajes con /temas"
@@ -68,7 +65,7 @@ async def start(update: Update, context: CallbackContext):
 
 
 # -------------------------------
-# LISTA /TEMAS EN PRIVADO
+# /TEMAS — LISTA TEMAS EN PRIVADO
 # -------------------------------
 async def temas(update: Update, context: CallbackContext):
     if update.effective_chat.type != "private":
@@ -93,7 +90,7 @@ async def temas(update: Update, context: CallbackContext):
 
 
 # -------------------------------
-# BOTÓN DE TEMA → REENVÍA MENSAJES GUARDADOS
+# BOTÓN DE TEMA → REENVIAR MENSAJES
 # -------------------------------
 async def on_topic_button(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -125,7 +122,7 @@ async def on_topic_created(update: Update, context: CallbackContext):
         return
 
     topic_id = msg.message_thread_id
-    topic_name = msg.forum_topic_created.name  # ← nombre REAL del tema
+    topic_name = msg.forum_topic_created.name  # ← Nombre REAL DEL TEMA
 
     topics = load_topics()
     if str(GROUP_ID) not in topics:
@@ -142,27 +139,19 @@ async def on_topic_created(update: Update, context: CallbackContext):
 
 
 # -------------------------------
-# GUARDAR MENSAJES DEL TEMA
+# GUARDAR MENSAJES DE LOS TEMAS
 # -------------------------------
 async def store_messages(update: Update, context: CallbackContext):
     msg = update.message
 
-    if not msg:
+    if not msg or msg.chat_id != GROUP_ID:
         return
 
-    # Solo mensajes del grupo correcto
-    if msg.chat_id != GROUP_ID:
-        return
-
-    # Solo mensajes que pertenecen a un tema
     if not msg.message_thread_id:
-        return
-
-    # Evitar guardar los mensajes del propio bot
-    if msg.from_user and msg.from_user.is_bot:
-        return
+        return  # No es un tema
 
     topic_id = msg.message_thread_id
+
     save_message(topic_id, msg.message_id)
 
 
@@ -172,12 +161,17 @@ async def store_messages(update: Update, context: CallbackContext):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Detectar nuevo tema
     app.add_handler(MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, on_topic_created))
+
+    # Guardar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL, store_messages))
 
+    # Comandos privados
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
+    # Botones / menú
     app.add_handler(CallbackQueryHandler(on_topic_button))
 
     print("🤖 Bot corriendo…")
