@@ -1,80 +1,82 @@
 import os
 import asyncio
 import aiosqlite
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
+    MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
+    filters,
 )
 
-print("=== VERSION BOT: 1.0 ===")
-
+print("=== BOT VERSION 2.0 ===")
 
 # ------------------------------
-#  VARIABLES Railway
+# VARIABLES DE ENTORNO
 # ------------------------------
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
 if not BOT_TOKEN:
-    raise RuntimeError("Error: BOT_TOKEN no está configurado en Railway.")
-
+    raise RuntimeError("BOT_TOKEN no configurado en Railway.")
 
 # ------------------------------
-#  BASE DE DATOS
+# BASE DE DATOS
 # ------------------------------
 
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS topics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_id INTEGER NOT NULL,
                 topic_id INTEGER NOT NULL,
                 topic_name TEXT NOT NULL
             )
-            """
-        )
+        """)
         await db.commit()
 
 
-async def save_topic(group_id: int, topic_id: int, topic_name: str):
+async def save_topic(group_id, topic_id, topic_name):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO topics (group_id, topic_id, topic_name) VALUES (?, ?, ?)",
-            (group_id, topic_id, topic_name),
+            (group_id, topic_id, topic_name)
         )
         await db.commit()
 
 
-async def get_topics(group_id: int):
+async def get_topics(group_id):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT topic_id, topic_name FROM topics WHERE group_id = ? ORDER BY id ASC",
-            (group_id,),
+            (group_id,)
         )
-        rows = await cursor.fetchall()
-        return rows
+        return await cursor.fetchall()
 
 
 # ------------------------------
-# COMANDO /setgroup
+# /setgroup
 # ------------------------------
 
 async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
+    msg = update.effective_message
 
-    if message.chat.type not in ["group", "supergroup"]:
-        await message.reply_text("⚠ Usa este comando dentro del grupo donde están los temas.")
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.reply_text("⚠ Usa /setgroup dentro del grupo donde están los temas.")
         return
 
-    group_id = message.chat_id
+    group_id = msg.chat_id
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -82,17 +84,17 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         count = (await cursor.fetchone())[0]
 
-    await message.reply_text(
-        f"✔ Grupo registrado.\n\n"
+    await msg.reply_text(
+        f"Grupo registrado.\n\n"
         f"Group ID: `{group_id}`\n"
-        f"Temas guardados: **{count}**\n\n"
-        "Ya puedes usar el bot por privado.",
+        f"Temas guardados: **{count}**\n"
+        f"Ahora usa /temas en privado.",
         parse_mode="Markdown"
     )
 
 
 # ------------------------------
-# EVENTO: Nuevo tema creado
+# Evento: Nuevo tema creado
 # ------------------------------
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,43 +109,45 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_id = msg.chat_id
 
     await save_topic(group_id, topic_id, topic_name)
-    await msg.reply_text(f"Nuevo tema guardado: {topic_name}")
+    await msg.reply_text(f"Tema guardado: {topic_name}")
 
 
 # ------------------------------
-# /temas → lista los temas
+# /temas → lista temas en privado
 # ------------------------------
 
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    private = update.effective_chat.type == "private"
-    if not private:
+    if update.effective_chat.type != "private":
         await update.message.reply_text("Envíame /temas por privado 😉")
         return
 
     group_id = os.getenv("GROUP_ID")
     if not group_id:
-        await update.message.reply_text("⚠ Primero configura /setgroup en el grupo.")
+        await update.message.reply_text(
+            "⚠ Primero usa /setgroup dentro del grupo."
+        )
         return
 
     group_id = int(group_id)
-
     rows = await get_topics(group_id)
+
     if not rows:
-        await update.message.reply_text("No hay temas guardados todavía.")
+        await update.message.reply_text("No hay temas guardados aún.")
         return
 
-    keyboard = []
-    for topic_id, topic_name in rows:
-        keyboard.append([InlineKeyboardButton(topic_name, callback_data=f"topic:{topic_id}")])
+    kb = [
+        [InlineKeyboardButton(name, callback_data=f"topic:{tid}")]
+        for tid, name in rows
+    ]
 
     await update.message.reply_text(
         "Selecciona un tema:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
 
 # ------------------------------
-# Seleccionar un tema y reenviar mensajes
+# Selección de un tema → reenviar mensajes
 # ------------------------------
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,12 +160,10 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     topic_id = int(data.split(":")[1])
     group_id = int(os.getenv("GROUP_ID"))
-
     bot = context.bot
 
-    await query.message.reply_text("Enviando contenido...")
+    await bot.send_message(query.from_user.id, "Enviando contenido...")
 
-    # Recorrer mensajes del hilo
     try:
         async for msg in bot.get_chat_history(
             chat_id=group_id,
@@ -176,83 +178,38 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=msg.message_id,
                     protect_content=True
                 )
-                await asyncio.sleep(0.8)
-            except Exception:
+                await asyncio.sleep(0.6)
+            except:
                 pass
 
         await bot.send_message(query.from_user.id, "✔ Finalizado.")
     except Exception as e:
-        await bot.send_message(query.from_user.id, f"❌ Error leyendo el tema: {e}")
+        await bot.send_message(query.from_user.id, f"❌ Error: {e}")
 
 
 # ------------------------------
-#  INICIO DEL BOT
+# MAIN SIN asyncio.run()
 # ------------------------------
 
-async def main():
-    await init_db()
-
+def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # handlers
+    # Inicializar DB al arrancar
+    application.job_queue.run_once(lambda *_: asyncio.create_task(init_db()), 0)
+
+    # Handlers correctos
     application.add_handler(CommandHandler("setgroup", setgroup))
     application.add_handler(CommandHandler("temas", temas))
     application.add_handler(CallbackQueryHandler(select_topic))
-    application.add_handler(
-        # Handler de temas creados
-        CallbackQueryHandler(select_topic)
-    )
-    application.add_handler(
-        # Handler evento topic creado
-        CommandHandler("topic_created_dummy", lambda *_: None)
-    )
 
-    # Este sí captura el evento real
+    # Evento: creación de tema
     application.add_handler(
-        CallbackQueryHandler(select_topic)
-    )
-
-    application.add_handler(
-        CommandHandler("start", lambda u,c: u.message.reply_text("Usa /temas"))
-    )
-
-    # Evento real de topic
-    application.add_handler(
-        CallbackQueryHandler(select_topic)
-    )
-
-    application.add_handler(
-        CommandHandler("help", lambda u,c: u.message.reply_text("Usa /temas"))
-    )
-
-    # Evento FORUM TOPIC creado correctamente:
-    application.add_handler(
-        CommandHandler("dummy", lambda *_: None)
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(select_topic)
-    )
-
-    # Evento real
-    application.add_handler(
-        CommandHandler("topic", lambda *_: None)
-    )
-
-    # IMPORTANTE
-    application.add_handler(
-        CallbackQueryHandler(select_topic)
-    )
-
-    # Handler real para topic_created:
-    from telegram.ext import MessageHandler, filters
-    application.add_handler(
-        MessageHandler(filters.ALL & filters.ChatType.GROUPS, topic_created)
+        MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created)
     )
 
     print("Bot corriendo en Railway...")
-    await application.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
