@@ -1,202 +1,188 @@
-import os
+import asyncio
 import aiosqlite
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
 )
 
-DB_PATH = "topics.db"
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # O ponlo manualmente aquí
+DB_FILE = "/app/data/topics.db"
+GROUP_ID = None
 
 
-# ------------------ BASE DE DATOS ------------------
-
+# ---------------------------
+#  BASE DE DATOS
+# ---------------------------
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_FILE) as db:
+        # tabla de temas
         await db.execute("""
             CREATE TABLE IF NOT EXISTS topics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id TEXT,
+                group_id INTEGER,
                 topic_id INTEGER,
-                topic_name TEXT
+                title TEXT
             )
         """)
+
+        # tabla para guardar permanentemente el group_id
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic_id INTEGER,
-                msg_id INTEGER
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT
             )
         """)
+
         await db.commit()
 
 
-async def save_topic(group_id, topic_id, name):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO topics (group_id, topic_id, topic_name) VALUES (?, ?, ?)",
-            (group_id, topic_id, name),
-        )
+async def save_group_id(group_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            INSERT INTO config (key, value) 
+            VALUES ('group_id', ?) 
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (str(group_id),))
         await db.commit()
 
 
-async def save_message(topic_id, msg_id):
-    async with aiosqlite.connect(DB_PATH) as db:
+async def load_group_id():
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT value FROM config WHERE key = 'group_id'")
+        row = await cur.fetchone()
+        return int(row[0]) if row else None
+
+
+async def save_topic(group_id, topic_id, title):
+    async with aiosqlite.connect(DB_FILE) as db:
         await db.execute(
-            "INSERT INTO messages (topic_id, msg_id) VALUES (?, ?)",
-            (topic_id, msg_id),
+            "INSERT INTO topics (group_id, topic_id, title) VALUES (?, ?, ?)",
+            (group_id, topic_id, title)
         )
         await db.commit()
 
 
 async def get_topics(group_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT topic_id, topic_name FROM topics WHERE group_id = ?", (group_id,)
-        )
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT topic_id, title FROM topics WHERE group_id = ?", (group_id,))
         return await cur.fetchall()
 
 
-async def get_messages(topic_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT msg_id FROM messages WHERE topic_id = ?", (topic_id,)
-        )
-        return await cur.fetchall()
-
-
-# ------------------ COMANDOS ------------------
-
+# ---------------------------
+#  COMANDOS PRIVADOS
+# ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola! Usa /setgroup para guardar este chat y /temas para ver los temas guardados."
-    )
-
-
-async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gid = update.message.chat_id
-
-    await update.message.reply_text(
-        f"✔ Grupo configurado.\nID guardado: `{gid}`",
-        parse_mode="Markdown"
-    )
-
-    context.chat_data["group_id"] = str(gid)
+    global GROUP_ID
+    if GROUP_ID is None:
+        await update.message.reply_text(
+            "Hola! Antes debes hacer /setgroup en tu grupo para configurarlo."
+        )
+    else:
+        await update.message.reply_text(
+            "Todo listo. Usa /temas para ver los temas guardados."
+        )
 
 
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    gid = context.chat_data.get("group_id")
-
-    if not gid:
-        await update.message.reply_text("Primero usa /setgroup en el grupo.")
+    global GROUP_ID
+    if GROUP_ID is None:
+        await update.message.reply_text("❌ Aún no hay un grupo configurado. Usa /setgroup en tu grupo.")
         return
 
-    topics = await get_topics(gid)
-
+    topics = await get_topics(GROUP_ID)
     if not topics:
-        await update.message.reply_text("No hay temas guardados aún.")
+        await update.message.reply_text("No hay temas guardados todavía.")
         return
 
-    botones = [[KeyboardButton(f"{name} ({tid})")] for tid, name in topics]
+    botones = [
+        [InlineKeyboardButton(t[1], callback_data=f"topic:{t[0]}")]
+        for t in topics
+    ]
+
     await update.message.reply_text(
         "Selecciona un tema:",
-        reply_markup=ReplyKeyboardMarkup(botones, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=InlineKeyboardMarkup(botones)
     )
 
 
-# ------------------ MANEJO DE TEMAS ------------------
+async def boton_seleccion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GROUP_ID
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":")
+    topic_id = int(data[1])
+
+    await query.edit_message_text("Enviando contenido...")
+
+    # reenviar mensaje del tema
+    await context.bot.forward_messages(
+        chat_id=update.effective_user.id,
+        from_chat_id=GROUP_ID,
+        message_ids=[topic_id]
+    )
+
+
+# ---------------------------
+#  COMANDOS EN GRUPO
+# ---------------------------
+async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GROUP_ID
+    GROUP_ID = update.message.chat_id
+
+    await save_group_id(GROUP_ID)
+
+    await update.message.reply_text(
+        f"✔ Grupo configurado.\nID guardado: `{GROUP_ID}`",
+        parse_mode="Markdown"
+    )
+
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = update.message
-    if not m or not m.is_topic_message:
+    global GROUP_ID
+    if GROUP_ID is None:
+        GROUP_ID = update.message.chat_id
+        await save_group_id(GROUP_ID)
+
+    topic = update.message.forum_topic_created
+    if topic is None:
         return
 
-    gid = str(m.chat_id)
-    tid = m.message_thread_id
-    name = m.reply_to_message.text if m.reply_to_message else "Sin nombre"
+    topic_id = update.message.message_thread_id
+    topic_name = topic.name
 
-    await save_topic(gid, tid, name)
-    print(f"[OK] Tema guardado: {name} ({tid})")
+    await save_topic(GROUP_ID, topic_id, topic_name)
 
-
-# ------------------ MENSAJES DENTRO DE TEMAS ------------------
-
-async def topic_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = update.message
-    if not m or not m.is_topic_message:
-        return  # ignorar todo lo que no sea mensaje de tema
-
-    tid = m.message_thread_id
-    mid = m.message_id
-
-    await save_message(tid, mid)
-
-    print(f"[OK] Mensaje detectado en topic {tid}: msg_id={mid}")
+    await update.message.reply_text(f"✔ Tema guardado: {topic_name} (ID {topic_id})")
 
 
-# ------------------ REENVÍO DE CONTENIDO ------------------
+# ---------------------------
+#  INICIO
+# ---------------------------
+async def main():
+    global GROUP_ID
 
-async def mensaje_seleccion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Si el usuario selecciona un tema del teclado, reenviamos su contenido."""
-    texto = update.message.text
+    await init_db()
 
-    # Buscar topic por nombre dentro de BD
-    gid = context.chat_data.get("group_id")
-    if not gid:
-        return
+    # CARGAR EL GROUP_ID DESDE EL ARCHIVO
+    GROUP_ID = await load_group_id()
 
-    topics = await get_topics(gid)
-    mapping = {f"{name} ({tid})": tid for tid, name in topics}
+    print("GROUP_ID cargado:", GROUP_ID)
 
-    if texto not in mapping:
-        return  # no es un tema
+    app = ApplicationBuilder().token("AQUI_TU_TOKEN").build()
 
-    topic_id = mapping[texto]
-
-    await update.message.reply_text("Enviando contenido...")
-
-    msgs = await get_messages(topic_id)
-
-    for (mid,) in msgs:
-        try:
-            await context.bot.forward_message(
-                chat_id=update.message.chat_id,
-                from_chat_id=gid,
-                message_id=mid
-            )
-        except Exception as e:
-            print("Error reenviando:", e)
-
-
-# ------------------ MAIN ------------------
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Inicializar BD antes de arrancar
-    app.post_init = lambda _: init_db()
-
-    # Comandos
+    # privados
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CommandHandler("temas", temas))
+    app.add_handler(CallbackQueryHandler(boton_seleccion))
 
-    # Detección de creación de tema (primer mensaje del topic)
-    app.add_handler(MessageHandler(filters.ALL, topic_created))
+    # grupo
+    app.add_handler(CommandHandler("setgroup", setgroup, filters.ChatType.GROUP))
+    app.add_handler(MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created))
 
-    # Capturar **TODOS** los mensajes dentro de un topic
-    app.add_handler(MessageHandler(filters.ALL, topic_message))
-
-    # Detección de selección de tema
-    app.add_handler(MessageHandler(filters.TEXT, mensaje_seleccion))
-
-    print("Bot corriendo en Railway…")
-    app.run_polling()
+    print("Bot corriendo…")
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
