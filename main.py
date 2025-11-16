@@ -1,180 +1,196 @@
 import os
 import json
-from pathlib import Path
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    CommandHandler,
-    filters,
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, CallbackContext, filters
 )
 
+# ---------------------------------------
+# VARIABLES DESDE RAILWAY
+# ---------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
-# Carpeta PERSISTENTE de Railway
-DATA_DIR = Path("/app/storage/topics")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# ---------------------------------------
+# RUTAS PERSISTENTES (VOLUMEN /data)
+# ---------------------------------------
+BASE_DIR = "/data"   # <--- ESTE ES EL VOLUMEN REAL
+TOPICS_FILE = os.path.join(BASE_DIR, "topics.json")
+MSG_DIR = os.path.join(BASE_DIR, "messages")
 
-TOPICS_FILE = DATA_DIR / "topics.json"
+# Crear rutas del volumen con permisos
+try:
+    os.makedirs(BASE_DIR, exist_ok=True)
+    os.makedirs(MSG_DIR, exist_ok=True)
+except Exception as e:
+    print("❌ Error creando directorios del volumen:", e)
 
-
-# ---------------------------------------------------------
-#   CARGA / GUARDA TEMAS
-# ---------------------------------------------------------
-def load_topics():
-    if not TOPICS_FILE.exists():
-        return {}
+# Crear topics.json si no existe
+if not os.path.isfile(TOPICS_FILE):
     try:
-        with open(TOPICS_FILE, "r", encoding="utf-8") as f:
+        with open(TOPICS_FILE, "w") as f:
+            json.dump({}, f)
+        print("✔ topics.json creado correctamente en /data")
+    except Exception as e:
+        print("❌ No se pudo crear topics.json en /data:", e)
+
+
+# ---------------------------------------
+# FUNCIONES DE PERSISTENCIA
+# ---------------------------------------
+def load_topics():
+    try:
+        with open(TOPICS_FILE, "r") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {}
 
 
 def save_topics(data):
-    with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    with open(TOPICS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 
-# ---------------------------------------------------------
-#   DETECTAR TEMAS Y GUARDAR MENSAJES
-# ---------------------------------------------------------
-async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if msg is None:
+def load_messages(topic_id):
+    file = os.path.join(MSG_DIR, f"{topic_id}.json")
+    if not os.path.exists(file):
+        return []
+    with open(file, "r") as f:
+        return json.load(f)
+
+
+def save_message(topic_id, message_id):
+    file = os.path.join(MSG_DIR, f"{topic_id}.json")
+    msgs = load_messages(topic_id)
+    msgs.append(message_id)
+    with open(file, "w") as f:
+        json.dump(msgs, f)
+
+
+# ---------------------------------------
+# /start EN PRIVADO
+# ---------------------------------------
+async def start(update: Update, context: CallbackContext):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "🤖 ¡Hola!\n"
+            "Este bot reenviará mensajes desde temas del grupo configurado.\n\n"
+            "• Crea un tema nuevo en el grupo\n"
+            "• El bot guardará su nombre real\n"
+            "• Luego podrás pedir sus mensajes con /temas"
+        )
+
+
+# ---------------------------------------
+# /temas EN PRIVADO
+# ---------------------------------------
+async def temas(update: Update, context: CallbackContext):
+    if update.effective_chat.type != "private":
         return
 
-    # Solo el grupo configurado
-    if msg.chat.id != GROUP_ID:
-        return
-
-    # Solo mensajes dentro de un tema
-    if msg.message_thread_id is None:
-        return
-
-    topic_id = str(msg.message_thread_id)
-    topics = load_topics()
-
-    # --- NOMBRE REAL DEL TEMA ---
-    if topic_id not in topics:
-        # Si este mensaje es el de creación de tema, trae forum_topic_created
-        if msg.forum_topic_created:
-            topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
-        else:
-            # Por si acaso, nombre genérico (solo si el bot no vio el mensaje de creación)
-            topic_name = f"Tema {topic_id}"
-
-        topics[topic_id] = {"name": topic_name, "messages": []}
-
-        # Solo avisamos una vez cuando detectamos el tema
-        try:
-            await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    # --- GUARDAR ESTE MENSAJE ---
-    topics[topic_id]["messages"].append({"id": msg.message_id})
-    save_topics(topics)
-
-
-# ---------------------------------------------------------
-#   /TEMAS -> LISTA CON BOTONES
-# ---------------------------------------------------------
-async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    topics = load_topics()
+    topics = load_topics().get(str(GROUP_ID), {})
 
     if not topics:
-        await update.message.reply_text("📭 No hay temas detectados aún.")
+        await update.message.reply_text("📭 No hay temas detectados todavía.")
         return
 
     keyboard = [
-        [InlineKeyboardButton(data["name"], callback_data=f"t:{tid}")]
-        for tid, data in topics.items()
+        [InlineKeyboardButton(f"📌 {name}", callback_data=f"topic_{tid}")]
+        for tid, name in topics.items()
     ]
 
     await update.message.reply_text(
-        "📚 <b>Temas detectados:</b>",
-        parse_mode="HTML",
+        "📚 *Temas detectados:*",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
-# ---------------------------------------------------------
-#   CALLBACK -> REENVIAR CONTENIDO DEL TEMA
-# ---------------------------------------------------------
-async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------------------------------
+# BOTÓN → ENVIAR CONTENIDO DEL TEMA
+# ---------------------------------------
+async def on_topic_button(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    _, topic_id = query.data.split(":")
-    topic_id = str(topic_id)
+    topic_id = int(query.data.replace("topic_", ""))
 
-    topics = load_topics()
-    if topic_id not in topics:
-        await query.edit_message_text("❌ Tema no encontrado.")
-        return
+    await query.message.reply_text("📨 Enviando contenido del tema...")
 
-    await query.edit_message_text("📨 Enviando contenido del tema...")
+    messages = load_messages(topic_id)
 
-    bot = context.bot
-    count = 0
-
-    for msg_info in topics[topic_id]["messages"]:
+    for msg_id in messages:
         try:
-            # copy_message => SIN remitente (“enviado por el bot”)
-            await bot.copy_message(
+            await context.bot.forward_message(
                 chat_id=query.from_user.id,
                 from_chat_id=GROUP_ID,
-                message_id=msg_info["id"],
-                protect_content=True,  # oculta datos de origen
+                message_id=msg_id
             )
-            count += 1
-        except Exception as e:
-            print(f"[ERROR] copiando mensaje {msg_info['id']}: {e}")
+        except:
+            pass
 
-    await bot.send_message(
-        chat_id=query.from_user.id,
-        text=f"✔ Fin del contenido del tema. ({count} mensajes)",
+
+# ---------------------------------------
+# DETECTAR NUEVO TEMA (CON NOMBRE REAL)
+# ---------------------------------------
+async def on_topic_created(update: Update, context: CallbackContext):
+    msg = update.message
+    if not msg or not msg.forum_topic_created:
+        return
+
+    topic_id = msg.message_thread_id
+    topic_name = msg.forum_topic_created.name  # NOMBRE REAL
+
+    topics = load_topics()
+    if str(GROUP_ID) not in topics:
+        topics[str(GROUP_ID)] = {}
+
+    topics[str(GROUP_ID)][str(topic_id)] = topic_name
+    save_topics(topics)
+
+    await context.bot.send_message(
+        GROUP_ID,
+        f"🗂 Tema detectado y guardado: *{topic_name}*",
+        parse_mode="Markdown"
     )
 
 
-# ---------------------------------------------------------
-#   /START
-# ---------------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Bot activo.\n"
-        f"• Grupo configurado: <code>{GROUP_ID}</code>\n"
-        "• Detecta nuevos temas automáticamente.\n"
-        "• Guarda todos los mensajes que se envían dentro del tema.\n"
-        "• Usa /temas en privado para recibir su contenido.",
-        parse_mode="HTML",
-    )
+# ---------------------------------------
+# GUARDAR MENSAJES DE LOS TEMAS
+# ---------------------------------------
+async def store_messages(update: Update, context: CallbackContext):
+    msg = update.message
+    if not msg or msg.chat_id != GROUP_ID:
+        return
+
+    if not msg.message_thread_id:
+        return  # No es un tema
+
+    topic_id = msg.message_thread_id
+    save_message(topic_id, msg.message_id)
 
 
-# ---------------------------------------------------------
-#   MAIN
-# ---------------------------------------------------------
+# ---------------------------------------
+# MAIN
+# ---------------------------------------
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
+    # Detectar nuevo tema
+    app.add_handler(MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, on_topic_created))
+
+    # Guardar mensajes de temas
+    app.add_handler(MessageHandler(filters.ALL, store_messages))
+
+    # Comandos en privado
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
-    app.add_handler(CallbackQueryHandler(send_topic))
-    # Capturamos TODO lo que no sea comando para guardar mensajes de temas
-    app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), detect))
 
-    print("BOT LISTO ✔")
+    # Botones
+    app.add_handler(CallbackQueryHandler(on_topic_button))
+
+    print("🤖 Bot corriendo (con persistencia en /data)…")
     app.run_polling()
 
 
