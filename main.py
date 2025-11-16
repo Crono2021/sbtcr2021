@@ -19,17 +19,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
 # ---------------------------------------------------------
-#   SISTEMA DE PATH SEGURO QUE NO ROMPE NADA
+#   CARPETA PERSISTENTE DE RAILWAY
+#   (TU VOLUMEN ESTÁ MONTADO EN /data)
 # ---------------------------------------------------------
+DATA_DIR = Path("/data/topics")   # <--- ÚNICO CAMBIO
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-if Path("/data").exists():
-    BASE_DIR = Path("/data/topics")
-else:
-    BASE_DIR = Path("/app/storage/topics")
-
-BASE_DIR.mkdir(parents=True, exist_ok=True)
-TOPICS_FILE = BASE_DIR / "topics.json"
-print(f"📁 Usando directorio de almacenamiento: {BASE_DIR}")
+TOPICS_FILE = DATA_DIR / "topics.json"
 
 
 # ---------------------------------------------------------
@@ -71,13 +67,16 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- NOMBRE REAL DEL TEMA ---
     if topic_id not in topics:
+        # Si este mensaje es el de creación de tema, trae forum_topic_created
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
         else:
+            # Por si acaso, nombre genérico (solo si el bot no vio el mensaje de creación)
             topic_name = f"Tema {topic_id}"
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
+        # Solo avisamos una vez cuando detectamos el tema
         try:
             await msg.reply_text(
                 f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
@@ -120,8 +119,8 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    _, topic_id_raw = query.data.split(":")
-    topic_id = topic_id_raw.strip()
+    _, topic_id = query.data.split(":")
+    topic_id = str(topic_id)
 
     topics = load_topics()
     if topic_id not in topics:
@@ -135,6 +134,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for msg_info in topics[topic_id]["messages"]:
         try:
+            # copy_message => SIN remitente (“enviado por el bot”)
             await bot.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=GROUP_ID,
@@ -159,8 +159,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Bot activo.\n"
         f"• Grupo configurado: <code>{GROUP_ID}</code>\n"
         "• Detecta nuevos temas automáticamente.\n"
-        "• Guarda todos los mensajes de cada tema.\n"
-        "• Usa /temas en privado para recibirlos.",
+        "• Guarda todos los mensajes que se envían dentro del tema.\n"
+        "• Usa /temas en privado para recibir su contenido.",
         parse_mode="HTML",
     )
 
@@ -174,10 +174,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CallbackQueryHandler(send_topic))
+
+    # Capturamos TODO lo que no sea comando para guardar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), detect))
 
-    print("BOT LISTO ✔")
-    print(f"🗂 Archivo de temas: {TOPICS_FILE}")
+    print("BOT LISTO ✔ (usando volumen en /data)")
     app.run_polling()
 
 
