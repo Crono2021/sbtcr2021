@@ -22,7 +22,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
-# SOLO ESTE USER PUEDE BORRAR
+# SOLO ESTE USER PUEDE BORRAR / REINICIAR
 OWNER_ID = 5540195020
 
 # Carpeta persistente
@@ -40,7 +40,7 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {}
 
 
@@ -75,11 +75,13 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
+        # Aquí SÍ escapamos porque usamos HTML en el mensaje
         await msg.reply_text(
             f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
             parse_mode="HTML",
         )
 
+    # Guardar mensaje
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
@@ -102,7 +104,8 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for tid, data in topics.items():
-            shown_name = escape(data["name"])   # escapado SOLO al mostrar
+            # OJO: en botones NO usamos escape(), es texto plano
+            shown_name = data["name"]
             keyboard.append(
                 [InlineKeyboardButton(f"📌 {shown_name}", callback_data=f"t:{tid}")]
             )
@@ -147,7 +150,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 protect_content=True,
             )
             count += 1
-        except:
+        except Exception:
             pass
 
     await bot.send_message(
@@ -173,7 +176,8 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for tid, data in topics.items():
-        shown_name = escape(data["name"])
+        # Botones: texto plano, sin escape
+        shown_name = data["name"]
         keyboard.append(
             [InlineKeyboardButton(f"❌ {shown_name}", callback_data=f"del:{tid}")]
         )
@@ -204,6 +208,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del topics[topic_id]
     save_topics(topics)
 
+    # Aquí sí escapamos porque usamos HTML
     await query.edit_message_text(
         f"🗑 Tema eliminado:\n<b>{escape(deleted_name)}</b>",
         parse_mode="HTML",
@@ -231,6 +236,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+    # Ejecuta automáticamente /temas
     return await temas(update, context)
 
 
@@ -247,9 +253,11 @@ def main():
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
+    # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
 
+    # Detectar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
