@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-print("=== BOT VERSION 4.0 ===")
+print("=== BOT VERSION 4.1 ===")
 
 # -------------------------------------
 # VARIABLES DE ENTORNO
@@ -26,7 +26,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN no configurado en Railway.")
+    raise RuntimeError("BOT_TOKEN no configurado.")
 
 
 # -------------------------------------
@@ -47,6 +47,7 @@ async def init_db():
         """)
         await db.commit()
 
+
 async def save_topic(group_id, topic_id, topic_name):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -54,6 +55,7 @@ async def save_topic(group_id, topic_id, topic_name):
             (group_id, topic_id, topic_name)
         )
         await db.commit()
+
 
 async def get_topics(group_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -91,7 +93,7 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------------------
-# NUEVO TEMA CREADO (COMPATIBLE PTB 20.0+)
+# NUEVO TEMA CREADO
 # -------------------------------------
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,7 +174,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=msg.message_id,
                     protect_content=True,
                 )
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(0.5)
             except:
                 pass
 
@@ -182,26 +184,33 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------------------
+# post_init ASYNC
+# -------------------------------------
+
+async def on_start(app: Application):
+    print("Inicializando base de datos…")
+    await init_db()
+    print("BD lista.")
+
+
+# -------------------------------------
 # MAIN
 # -------------------------------------
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Inicializar BD automáticamente al arrancar
-    app.post_init = lambda _: asyncio.create_task(init_db())
+    app = Application.builder().token(BOT_TOKEN).post_init(on_start).build()
 
     # Handlers
     app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CallbackQueryHandler(select_topic))
 
-    # Handler correcto de PTB 20.x
+    # Tema creado (COMPATIBLE)
     app.add_handler(
         MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, topic_created)
     )
 
-    print("Bot corriendo en Railway...")
+    print("Bot corriendo en Railway…")
     app.run_polling()
 
 
