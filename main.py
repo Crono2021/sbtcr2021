@@ -1,144 +1,129 @@
 import os
 import json
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ForumTopicCreated
-)
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters
 )
 
-# ============================================================
+# ============================
 # CONFIG
-# ============================================================
-
-GROUP_ID = int(os.getenv("GROUP_ID"))  # ← SE LEE DE RAILWAY
-DATA_DIR = "/data"
-DATA_FILE = os.path.join(DATA_DIR, "topics.json")
+# ============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID = int(os.getenv("GROUP_ID"))  # ← Railway env var
+DATA_FILE = "/app/data/topics.json"   # ← guardado en volumen Railway
 
+# ============================
+# BASE DE DATOS (JSON SIMPLE)
+# ============================
 
-# ============================================================
-# FUNCIONES JSON
-# ============================================================
+def ensure_storage():
+    os.makedirs("/app/data", exist_ok=True)
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w") as f:
+            f.write(json.dumps({"topics": {}}))
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"topics": {}}
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {"topics": {}}
-
+    ensure_storage()
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
 def save_data(data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-
-# ============================================================
+# ============================
 # HANDLERS
-# ============================================================
+# ============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola! Usa /temas para ver los temas guardados.")
+    await update.message.reply_text(
+        "🤖 ¡Hola! Este bot reenvía mensajes desde temas del grupo configurado.\n"
+        "El bot ya está configurado vía Railway (GROUP_ID).\n\n"
+        "✓ Crear un tema nuevo en el grupo.\n"
+        "✓ Todo mensaje dentro del tema será reenviado por privado."
+    )
 
-
+# --- detectar creación de temas ---
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-
-    if not msg or msg.chat_id != GROUP_ID:
+    if not msg:
         return
 
+    # Solo actuar en el grupo correcto
+    if msg.chat_id != GROUP_ID:
+        return
+
+    # Solo si REALMENTE es creación de un tema
     if not msg.forum_topic_created:
         return
 
-    topic: ForumTopicCreated = msg.forum_topic_created
     topic_id = msg.message_thread_id
-    topic_name = topic.name
+    topic_name = msg.forum_topic_created.name
 
     data = load_data()
     data["topics"][str(topic_id)] = topic_name
     save_data(data)
 
-    await msg.reply_text(f"📝 Tema guardado: *{topic_name}*", parse_mode="Markdown")
+    await msg.reply_text(f"📝 Tema detectado y guardado:\n*{topic_name}*", parse_mode="Markdown")
 
+# --- reenviar mensajes de temas ---
+async def forward_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg:
+        return
 
-async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Solo reenviar mensajes del grupo correcto
+    if msg.chat_id != GROUP_ID:
+        return
+
+    # Solo reenviar mensajes que estén dentro de un tema
+    if msg.message_thread_id is None:
+        return
+
+    # Comprobar que el tema está registrado
     data = load_data()
-    topics = data.get("topics", {})
-
-    if not topics:
-        await update.message.reply_text("No hay temas guardados aún.")
+    topic_id = str(msg.message_thread_id)
+    if topic_id not in data["topics"]:
         return
 
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"topic:{tid}")]
-        for tid, name in topics.items()
-    ]
-
-    await update.message.reply_text(
-        "Selecciona un tema:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def enviar_tema(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    topic_id = int(query.data.split(":")[1])
-
-    await query.edit_message_text("Enviando contenido...")
-
-    # Obtener mensajes del tema
+    # Reenviar el mensaje al usuario
     try:
-        messages = await context.bot.get_forum_topic_messages(GROUP_ID, topic_id)
+        await context.bot.forward_message(
+            chat_id=msg.from_user.id,
+            from_chat_id=GROUP_ID,
+            message_id=msg.message_id
+        )
     except:
-        await query.edit_message_text("❌ No se pudo obtener el contenido del tema.")
-        return
+        pass
 
-    # Enviar cada mensaje como forward (oculta remitente automáticamente)
-    for m in messages:
-        try:
-            await context.bot.forward_message(
-                chat_id=query.message.chat_id,
-                from_chat_id=GROUP_ID,
-                message_id=m.message_id
-            )
-        except:
-            pass
-
-
-# ============================================================
+# ============================
 # MAIN
-# ============================================================
+# ============================
 
 def main():
+    print("=== BOT VERSION FINAL ===")
+    print("Montando base de datos/volumen…")
+    ensure_storage()
+    print("✔ Base de datos lista")
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Comandos
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("temas", temas))
 
-    # Detecta creación de temas
-    app.add_handler(MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created))
+    # Detectar creación de temas (PTB v21+)
+    app.add_handler(MessageHandler(filters.ALL, topic_created))
 
-    # Para seleccionar tema en privado
-    app.add_handler(CallbackQueryHandler(enviar_tema, pattern=r"topic:"))
+    # Reenviar mensajes de temas
+    app.add_handler(MessageHandler(filters.ALL, forward_messages))
 
     print("🤖 Bot corriendo en Railway…")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
