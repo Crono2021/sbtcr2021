@@ -13,7 +13,7 @@ from telegram.ext import (
 
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
-# Crear carpeta del volumen si no existe (Railway requiere esto)
+# Crear carpeta del volumen si no existe (Railway lo necesita)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
@@ -56,7 +56,19 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_name = update.message.forum_topic_created.name
 
     await save_topic(topic_id, topic_name)
-    await update.message.reply_text(f"Tema registrado: {topic_name}")
+    await update.message.reply_text(f"Nuevo tema registrado: {topic_name}")
+
+
+# ==========================
+#   DETECCIÓN DE EVENTOS (sin filtros inexistentes)
+# ==========================
+
+async def topic_created_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Se ejecuta ante cualquier mensaje y detecta si es un mensaje de creación de tema.
+    """
+    if update.message and update.message.forum_topic_created:
+        await topic_created(update, context)
 
 
 # ==========================
@@ -93,6 +105,7 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     group_id = chat.id
+
     await update.message.reply_text(
         f"El GROUP_ID de este grupo es:\n\n`{group_id}`",
         parse_mode="Markdown"
@@ -100,7 +113,7 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-#   BOTONES: SELECCIONAR TEMA
+#   SELECCIONAR TEMA (BOTONES)
 # ==========================
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,12 +123,16 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, topic_id = query.data.split(":")
     topic_id = int(topic_id)
 
-    # Leer el ID del grupo desde variable de entorno Railway
-    group_id = int(os.getenv("GROUP_ID"))
+    group_id = os.getenv("GROUP_ID")
+    if not group_id:
+        await query.message.reply_text("Error: GROUP_ID no está configurado en Railway.")
+        return
+
+    group_id = int(group_id)
 
     await query.message.reply_text("Enviando contenido...")
 
-    # Reenviar todos los mensajes del hilo sin mostrar remitente
+    # Reenviar mensajes sin mostrar remitente
     async for msg in context.bot.get_chat_history(
         chat_id=group_id,
         message_thread_id=topic_id,
@@ -148,7 +165,7 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CallbackQueryHandler(select_topic, pattern="^topic:"))
-    app.add_handler(MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created))
+    app.add_handler(MessageHandler(filters.ALL, topic_created_filter))
 
     print("Bot corriendo en Railway...")
     await app.run_polling()
