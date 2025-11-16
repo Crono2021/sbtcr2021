@@ -13,6 +13,9 @@ from telegram.ext import (
 
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
+# Crear carpeta del volumen si no existe (Railway requiere esto)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 
 # ==========================
 #   BASE DE DATOS
@@ -90,7 +93,6 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     group_id = chat.id
-
     await update.message.reply_text(
         f"El GROUP_ID de este grupo es:\n\n`{group_id}`",
         parse_mode="Markdown"
@@ -98,7 +100,7 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
-#   SELECCIONAR TEMA (BOTONES)
+#   BOTONES: SELECCIONAR TEMA
 # ==========================
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,12 +110,12 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, topic_id = query.data.split(":")
     topic_id = int(topic_id)
 
-    # GROUP_ID desde variables de entorno
+    # Leer el ID del grupo desde variable de entorno Railway
     group_id = int(os.getenv("GROUP_ID"))
 
     await query.message.reply_text("Enviando contenido...")
 
-    # Reenviar los mensajes del tema ocultando remitente
+    # Reenviar todos los mensajes del hilo sin mostrar remitente
     async for msg in context.bot.get_chat_history(
         chat_id=group_id,
         message_thread_id=topic_id,
@@ -125,7 +127,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from_chat_id=group_id,
                 message_id=msg.message_id
             )
-        except:
+        except Exception:
             pass
 
 
@@ -142,7 +144,7 @@ async def run_bot():
 
     app = ApplicationBuilder().token(token).build()
 
-    # --- Handlers ---
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CallbackQueryHandler(select_topic, pattern="^topic:"))
