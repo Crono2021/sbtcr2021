@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-print("=== BOT VERSION 2.0 ===")
+print("=== BOT VERSION 3.0 ===")
 
 # ------------------------------
 # VARIABLES DE ENTORNO
@@ -27,6 +27,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN no configurado en Railway.")
+
 
 # ------------------------------
 # BASE DE DATOS
@@ -188,21 +189,19 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------
-# MAIN SIN asyncio.run()
+# MAIN CORRECTO (sin asyncio.run)
 # ------------------------------
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Inicializar DB al arrancar
-    application.job_queue.run_once(lambda *_: asyncio.create_task(init_db()), 0)
+    # Inicializar DB antes de arrancar el bot
+    application.post_init = lambda app: asyncio.create_task(init_db())
 
-    # Handlers correctos
+    # Handlers
     application.add_handler(CommandHandler("setgroup", setgroup))
     application.add_handler(CommandHandler("temas", temas))
     application.add_handler(CallbackQueryHandler(select_topic))
-
-    # Evento: creación de tema
     application.add_handler(
         MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created)
     )
