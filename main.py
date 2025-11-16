@@ -1,11 +1,10 @@
 import os
-import sqlite3
-from contextlib import closing
-
+import json
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ForumTopicCreated
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -13,224 +12,131 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters,
+    filters
 )
 
-# -----------------------------
+# ============================================================
 # CONFIG
-# -----------------------------
+# ============================================================
+
+GROUP_ID = int(os.getenv("GROUP_ID"))  # ← SE LEE DE RAILWAY
+DATA_DIR = "/data"
+DATA_FILE = os.path.join(DATA_DIR, "topics.json")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("Falta la variable de entorno BOT_TOKEN.")
-
-DB_PATH = "/data/topics.sqlite3"
 
 
-# -----------------------------
-# DB HELPERS
-# -----------------------------
-def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS topics (
-                topic_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL
-            )
-            """
-        )
-        conn.commit()
-    print("✔ Base de datos inicializada:", DB_PATH)
+# ============================================================
+# FUNCIONES JSON
+# ============================================================
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"topics": {}}
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"topics": {}}
 
 
-def set_group_id(group_id: int):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO config (key, value) VALUES ('group_id', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (str(group_id),),
-        )
-        conn.commit()
+def save_data(data):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-def get_group_id():
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM config WHERE key = 'group_id'")
-        r = cur.fetchone()
-        return int(r[0]) if r else None
-
-
-def save_topic(topic_id, name):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO topics (topic_id, name) VALUES (?, ?) "
-            "ON CONFLICT(topic_id) DO UPDATE SET name = excluded.name",
-            (topic_id, name),
-        )
-        conn.commit()
-    print(f"✔ Tema guardado: {name} (ID {topic_id})")
-
-
-def get_topics():
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT topic_id, name FROM topics ORDER BY name")
-        return cur.fetchall()
-
-
-def save_message(topic_id, message_id):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages (topic_id, message_id) VALUES (?, ?)",
-            (topic_id, message_id),
-        )
-        conn.commit()
-
-
-def get_message_ids(topic_id):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT message_id FROM messages WHERE topic_id = ? ORDER BY id",
-            (topic_id,),
-        )
-        return [r[0] for r in cur.fetchall()]
-
-
-# -----------------------------
+# ============================================================
 # HANDLERS
-# -----------------------------
+# ============================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola!\nUsa /setgroup en el grupo y /temas en privado."
-    )
+    await update.message.reply_text("Hola! Usa /temas para ver los temas guardados.")
 
 
-async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("Este comando solo funciona dentro del grupo.")
+async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+
+    if not msg or msg.chat_id != GROUP_ID:
         return
 
-    set_group_id(chat.id)
-    await update.message.reply_text(
-        f"✔ Grupo configurado.\nID guardado: `{chat.id}`",
-        parse_mode="Markdown",
-    )
-    print("Grupo configurado:", chat.id)
+    if not msg.forum_topic_created:
+        return
+
+    topic: ForumTopicCreated = msg.forum_topic_created
+    topic_id = msg.message_thread_id
+    topic_name = topic.name
+
+    data = load_data()
+    data["topics"][str(topic_id)] = topic_name
+    save_data(data)
+
+    await msg.reply_text(f"📝 Tema guardado: *{topic_name}*", parse_mode="Markdown")
 
 
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    topics = get_topics()
+    data = load_data()
+    topics = data.get("topics", {})
+
     if not topics:
-        await update.message.reply_text("No hay temas guardados.")
+        await update.message.reply_text("No hay temas guardados aún.")
         return
 
-    kb = [
+    keyboard = [
         [InlineKeyboardButton(name, callback_data=f"topic:{tid}")]
-        for tid, name in topics
+        for tid, name in topics.items()
     ]
 
     await update.message.reply_text(
         "Selecciona un tema:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-async def topic_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+async def enviar_tema(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    data = q.data
-    if not data.startswith("topic:"):
+    topic_id = int(query.data.split(":")[1])
+
+    await query.edit_message_text("Enviando contenido...")
+
+    # Obtener mensajes del tema
+    try:
+        messages = await context.bot.get_forum_topic_messages(GROUP_ID, topic_id)
+    except:
+        await query.edit_message_text("❌ No se pudo obtener el contenido del tema.")
         return
 
-    topic_id = int(data.split(":")[1])
-    group_id = get_group_id()
-
-    if not group_id:
-        await q.edit_message_text("❌ No hay un grupo configurado.")
-        return
-
-    msg_ids = get_message_ids(topic_id)
-    if not msg_ids:
-        await q.edit_message_text("Este tema no tiene mensajes.")
-        return
-
-    await q.edit_message_text("Reenviando contenido...")
-
-    for mid in msg_ids:
+    # Enviar cada mensaje como forward (oculta remitente automáticamente)
+    for m in messages:
         try:
             await context.bot.forward_message(
-                chat_id=q.message.chat_id,
-                from_chat_id=group_id,
-                message_id=mid,
+                chat_id=query.message.chat_id,
+                from_chat_id=GROUP_ID,
+                message_id=m.message_id
             )
-        except Exception as e:
-            print("⚠ Error reenviando:", e)
-
-    await context.bot.send_message(
-        chat_id=q.message.chat_id,
-        text="✔ Contenido reenviado."
-    )
+        except:
+            pass
 
 
-async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg:
-        return
-
-    # Nuevo tema
-    if msg.forum_topic_created:
-        save_topic(msg.message_thread_id, msg.forum_topic_created.name)
-        return
-
-    # Mensajes dentro de un tema
-    if msg.is_topic_message and msg.message_thread_id:
-        save_message(msg.message_thread_id, msg.message_id)
-
-
-# -----------------------------
+# ============================================================
 # MAIN
-# -----------------------------
-def main():
-    print("=== BOT TOPIC FORWARD v1 ===")
-    init_db()
+# ============================================================
 
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("setgroup", setgroup))
     app.add_handler(CommandHandler("temas", temas))
 
-    app.add_handler(CallbackQueryHandler(topic_button))
+    # Detecta creación de temas
+    app.add_handler(MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created))
 
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, group_activity))
+    # Para seleccionar tema en privado
+    app.add_handler(CallbackQueryHandler(enviar_tema, pattern=r"topic:"))
 
-    print("🤖 Bot corriendo en Railway...")
+    print("🤖 Bot corriendo en Railway…")
     app.run_polling()
 
 
