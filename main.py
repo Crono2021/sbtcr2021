@@ -22,7 +22,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
 
 # -------------------------------------
-# BASE DE DATOS (RESETEA TABLA SI CAMBIA)
+# BASE DE DATOS (RECREA TABLA SI FALTA)
 # -------------------------------------
 
 async def init_db():
@@ -64,10 +64,12 @@ async def get_topics(group_id):
 
 async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
-        return await update.message.reply_text("Usa este comando dentro del grupo.")
+        return await update.message.reply_text("Este comando debe ejecutarse en el grupo.")
 
     gid = update.effective_chat.id
-    await update.message.reply_text(f"GROUP_ID: `{gid}`", parse_mode="Markdown")
+
+    # SIN parse_mode = no errores
+    await update.message.reply_text(f"GROUP_ID: {gid}")
 
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +120,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=query.from_user.id,
                 from_chat_id=gid,
                 message_id=msg.message_id,
-                protect_content=True,
+                protect_content=True,  # OCULTA REMITENTE
             )
             await asyncio.sleep(0.3)
         except:
@@ -139,7 +141,7 @@ def main():
 
     print("Bot corriendo en Railway…")
 
-    # Crear DB antes de arrancar polling
+    # Inicializa BD ANTES de arrancar el bot
     asyncio.get_event_loop().run_until_complete(init_db())
 
     app.run_polling()
