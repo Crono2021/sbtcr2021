@@ -13,7 +13,7 @@ from telegram.ext import (
 
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
 
-# Crear carpeta del volumen si no existe (Railway)
+# Crear carpeta (necesario en Railway)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
@@ -22,31 +22,27 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 # ==========================
 
 async def init_db():
-    """Crea la tabla de temas si no existe."""
+    """Crea la tabla si no existe."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS topics (
                 topic_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL
             )
-            """
-        )
+        """)
         await db.commit()
 
 
 async def save_topic(topic_id: int, name: str):
-    """Guarda o actualiza un tema."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO topics (topic_id, name) VALUES (?, ?)",
-            (topic_id, name),
+            (topic_id, name)
         )
         await db.commit()
 
 
 async def get_topics():
-    """Devuelve todos los temas almacenados."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT topic_id, name FROM topics ORDER BY name ASC"
@@ -59,7 +55,7 @@ async def get_topics():
 # ==========================
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Se llama cuando se detecta que se ha creado un nuevo tema."""
+    """Guarda temas cuando se crean."""
     if not update.message or not update.message.forum_topic_created:
         return
 
@@ -67,14 +63,11 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_name = update.message.forum_topic_created.name
 
     await save_topic(topic_id, topic_name)
-    await update.message.reply_text(f"Tema registrado: {topic_name}")
+    await update.message.reply_text(f"Tema registrado correctamente: {topic_name}")
 
 
 async def topic_created_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handler genérico que mira TODOS los mensajes y, si contienen
-    forum_topic_created, llama a topic_created.
-    """
+    """Handler genérico que detecta creación de temas."""
     if update.message and update.message.forum_topic_created:
         await topic_created(update, context)
 
@@ -97,7 +90,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Selecciona un tema:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -106,93 +99,79 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================
 
 async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Devuelve el GROUP_ID sin usar Markdown para evitar errores."""
     chat = update.effective_chat
 
     if chat.type not in ("group", "supergroup"):
         await update.message.reply_text(
-            "Este comando solo funciona dentro de un grupo o supergrupo."
+            "Este comando debe ejecutarse dentro de un grupo o supergrupo."
         )
         return
 
     group_id = chat.id
 
     await update.message.reply_text(
-        f"El GROUP_ID de este grupo es:\n\n`{group_id}`",
-        parse_mode="Markdown",
+        f"El GROUP_ID de este grupo es:\n\n{group_id}"
     )
 
 
 # ==========================
-#   SELECCIONAR TEMA (BOTONES)
+#   BOTONES: SELECCIONAR TEMA
 # ==========================
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data or ""
+    data = query.data
     if not data.startswith("topic:"):
         return
 
-    _, topic_id_str = data.split(":", 1)
-    try:
-        topic_id = int(topic_id_str)
-    except ValueError:
-        await query.message.reply_text("ID de tema no válido.")
-        return
+    topic_id = int(data.split(":")[1])
 
     group_id_str = os.getenv("GROUP_ID")
     if not group_id_str:
-        await query.message.reply_text(
-            "Error: GROUP_ID no está configurado en las variables de entorno."
-        )
+        await query.message.reply_text("Error: Falta GROUP_ID en Railway.")
         return
 
-    try:
-        group_id = int(group_id_str)
-    except ValueError:
-        await query.message.reply_text("Error: GROUP_ID no es un número válido.")
-        return
+    group_id = int(group_id_str)
 
     await query.message.reply_text("Enviando contenido...")
 
     bot = context.bot
 
-    # Recorremos el hilo en orden cronológico (oldest_first=True)
+    # Recorre el hilo en orden cronológico
     async for msg in bot.get_chat_history(
         chat_id=group_id,
         message_thread_id=topic_id,
         limit=2000,
-        oldest_first=True,
+        oldest_first=True
     ):
         try:
             await bot.copy_message(
                 chat_id=query.from_user.id,
                 from_chat_id=group_id,
-                message_id=msg.message_id,
+                message_id=msg.message_id
             )
-        except Exception:
-            # Ignoramos mensajes que no se pueden copiar
+        except:
             pass
 
 
 # ==========================
-#   MAIN ASÍNCRONO
+#   MAIN — ARRANQUE ESTABLE PARA RAILWAY
 # ==========================
 
 async def main():
-    # 1) Inicializar BD
+    """Arranque estable sin problemas de event loop."""
     await init_db()
 
-    # 2) Leer token
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Error: BOT_TOKEN no está configurado en Railway.")
 
-    # 3) Crear aplicación
     application = ApplicationBuilder().token(token).build()
 
-    # 4) Registrar handlers
+    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("setgroup", setgroup))
     application.add_handler(CallbackQueryHandler(select_topic, pattern="^topic:"))
@@ -200,12 +179,11 @@ async def main():
 
     print("Bot corriendo en Railway...")
 
-    # 5) Arrancar de forma explícita sin run_polling()
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
 
-    # 6) Mantener el bot vivo hasta que el contenedor se pare
+    # Mantener el bot vivo
     await asyncio.Event().wait()
 
 
