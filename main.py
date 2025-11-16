@@ -16,11 +16,11 @@ from telegram.ext import (
     filters,
 )
 
-print("=== BOT VERSION 3.0 ===")
+print("=== BOT VERSION 4.0 ===")
 
-# ------------------------------
+# -------------------------------------
 # VARIABLES DE ENTORNO
-# ------------------------------
+# -------------------------------------
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "/data/topics.sqlite3")
@@ -29,9 +29,9 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN no configurado en Railway.")
 
 
-# ------------------------------
+# -------------------------------------
 # BASE DE DATOS
-# ------------------------------
+# -------------------------------------
 
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -47,7 +47,6 @@ async def init_db():
         """)
         await db.commit()
 
-
 async def save_topic(group_id, topic_id, topic_name):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -55,7 +54,6 @@ async def save_topic(group_id, topic_id, topic_name):
             (group_id, topic_id, topic_name)
         )
         await db.commit()
-
 
 async def get_topics(group_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -66,9 +64,9 @@ async def get_topics(group_id):
         return await cursor.fetchall()
 
 
-# ------------------------------
+# -------------------------------------
 # /setgroup
-# ------------------------------
+# -------------------------------------
 
 async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -80,27 +78,24 @@ async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_id = msg.chat_id
 
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM topics WHERE group_id = ?", (group_id,)
-        )
-        count = (await cursor.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM topics WHERE group_id = ?", (group_id,))
+        count = (await cur.fetchone())[0]
 
     await msg.reply_text(
-        f"Grupo registrado.\n\n"
+        f"✔ Grupo registrado.\n\n"
         f"Group ID: `{group_id}`\n"
         f"Temas guardados: **{count}**\n"
-        f"Ahora usa /temas en privado.",
+        "Ahora usa /temas por privado.",
         parse_mode="Markdown"
     )
 
 
-# ------------------------------
-# Evento: Nuevo tema creado
-# ------------------------------
+# -------------------------------------
+# NUEVO TEMA CREADO (COMPATIBLE PTB 20.0+)
+# -------------------------------------
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
-
     if not msg or not msg.forum_topic_created:
         return
 
@@ -113,9 +108,9 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(f"Tema guardado: {topic_name}")
 
 
-# ------------------------------
-# /temas → lista temas en privado
-# ------------------------------
+# -------------------------------------
+# /temas
+# -------------------------------------
 
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
@@ -124,32 +119,30 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     group_id = os.getenv("GROUP_ID")
     if not group_id:
-        await update.message.reply_text(
-            "⚠ Primero usa /setgroup dentro del grupo."
-        )
+        await update.message.reply_text("⚠ Primero usa /setgroup dentro del grupo.")
         return
 
     group_id = int(group_id)
     rows = await get_topics(group_id)
 
     if not rows:
-        await update.message.reply_text("No hay temas guardados aún.")
+        await update.message.reply_text("No hay temas guardados todavía.")
         return
 
-    kb = [
-        [InlineKeyboardButton(name, callback_data=f"topic:{tid}")]
-        for tid, name in rows
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=f"topic:{topic_id}")]
+        for topic_id, name in rows
     ]
 
     await update.message.reply_text(
         "Selecciona un tema:",
-        reply_markup=InlineKeyboardMarkup(kb)
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# ------------------------------
+# -------------------------------------
 # Selección de un tema → reenviar mensajes
-# ------------------------------
+# -------------------------------------
 
 async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -177,7 +170,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=query.from_user.id,
                     from_chat_id=group_id,
                     message_id=msg.message_id,
-                    protect_content=True
+                    protect_content=True,
                 )
                 await asyncio.sleep(0.6)
             except:
@@ -188,26 +181,28 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.send_message(query.from_user.id, f"❌ Error: {e}")
 
 
-# ------------------------------
-# MAIN CORRECTO (sin asyncio.run)
-# ------------------------------
+# -------------------------------------
+# MAIN
+# -------------------------------------
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
-    # Inicializar DB antes de arrancar el bot
-    application.post_init = lambda app: asyncio.create_task(init_db())
+    # Inicializar BD automáticamente al arrancar
+    app.post_init = lambda _: asyncio.create_task(init_db())
 
     # Handlers
-    application.add_handler(CommandHandler("setgroup", setgroup))
-    application.add_handler(CommandHandler("temas", temas))
-    application.add_handler(CallbackQueryHandler(select_topic))
-    application.add_handler(
-        MessageHandler(filters.FORUM_TOPIC_CREATED, topic_created)
+    app.add_handler(CommandHandler("setgroup", setgroup))
+    app.add_handler(CommandHandler("temas", temas))
+    app.add_handler(CallbackQueryHandler(select_topic))
+
+    # Handler correcto de PTB 20.x
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, topic_created)
     )
 
     print("Bot corriendo en Railway...")
-    application.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
