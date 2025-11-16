@@ -20,9 +20,7 @@ from telegram.ext import (
 # ======================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-
-# Owner fijo según tu petición
-OWNER_ID = 5540195020  
+OWNER_ID = 5540195020  # Owner fijo
 
 # Carpeta persistente
 DATA_DIR = Path("/data")
@@ -49,14 +47,26 @@ def save_topics(data):
 
 
 # ======================================================
+#   FUNCIÓN DE ORDENAMIENTO PERSONALIZADO
+# ======================================================
+def sort_key(item):
+    name = item[1]["name"]
+    first = name[0]
+
+    # Si empieza por una letra (a–z o A–Z), va al grupo 1
+    if first.isalpha():
+        return (1, name.lower())
+
+    # Si empieza por número o símbolo, va al grupo 0
+    return (0, name.lower())
+
+
+# ======================================================
 #   DETECTAR TEMAS Y GUARDAR MENSAJES
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if msg is None:
-        return
-
-    if msg.chat.id != GROUP_ID:
+    if msg is None or msg.chat.id != GROUP_ID:
         return
 
     if msg.message_thread_id is None:
@@ -65,7 +75,6 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Detectar nombre real del tema
     if topic_id not in topics:
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name
@@ -74,21 +83,17 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
-        try:
-            await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
-                parse_mode="HTML",
-            )
-        except:
-            pass
+        await msg.reply_text(
+            f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
+            parse_mode="HTML",
+        )
 
-    # Guardar mensaje
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
 
 # ======================================================
-#   /TEMAS → LISTA ORDENADA
+#   /TEMAS → LISTA ORDENADA PERSONALIZADA
 # ======================================================
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -99,23 +104,19 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = load_topics()
 
     if not topics:
-        await chat.send_message("📭 No hay temas detectados aún.")
+        await chat.send_message("📭 No hay series disponibles.")
         return
 
-    # Orden alfabético real
-    sorted_topics = sorted(
-        topics.items(),
-        key=lambda item: item[1]["name"].lower()
-    )
+    # Orden personalizado: primero símbolos/números, luego letras
+    sorted_topics = sorted(topics.items(), key=sort_key)
 
-    keyboard = []
-    for tid, data in sorted_topics:
-        keyboard.append(
-            [InlineKeyboardButton(f"📌 {data['name']}", callback_data=f"t:{tid}")]
-        )
+    keyboard = [
+        [InlineKeyboardButton(f"📌 {data['name']}", callback_data=f"t:{tid}")]
+        for tid, data in sorted_topics
+    ]
 
     await chat.send_message(
-        "📚 <b>Temas detectados:</b>",
+        "🎬 <b>Catálogo de series</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -132,7 +133,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
-
     if topic_id not in topics:
         await query.edit_message_text("❌ Tema no encontrado.")
         return
@@ -175,17 +175,12 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay temas para borrar.")
         return
 
-    # Orden alfabético
-    sorted_topics = sorted(
-        topics.items(),
-        key=lambda item: item[1]["name"].lower()
-    )
+    sorted_topics = sorted(topics.items(), key=sort_key)
 
-    keyboard = []
-    for tid, data in sorted_topics:
-        keyboard.append(
-            [InlineKeyboardButton(f"❌ {data['name']}", callback_data=f"del:{tid}")]
-        )
+    keyboard = [
+        [InlineKeyboardButton(f"❌ {data['name']}", callback_data=f"del:{tid}")]
+        for tid, data in sorted_topics
+    ]
 
     await chat.send_message(
         "🗑 <b>Selecciona el tema que deseas borrar:</b>",
@@ -240,8 +235,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 ¡Hola! Selecciona una serie para ver:",
         parse_mode="HTML",
     )
-
-    # Mostrar lista directamente
     return await temas(update, context)
 
 
@@ -254,14 +247,12 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
-    # solo owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
 
-    # Detectar mensajes de temas
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
