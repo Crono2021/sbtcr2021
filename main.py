@@ -55,7 +55,7 @@ async def get_topics():
 # ==========================
 
 async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Guarda temas cuando se crean."""
+    """Se llama cuando se crea un nuevo tema."""
     if not update.message or not update.message.forum_topic_created:
         return
 
@@ -63,11 +63,11 @@ async def topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_name = update.message.forum_topic_created.name
 
     await save_topic(topic_id, topic_name)
-    await update.message.reply_text(f"Tema registrado correctamente: {topic_name}")
+    await update.message.reply_text(f"Nuevo tema guardado: {topic_name}")
 
 
 async def topic_created_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler genérico que detecta creación de temas."""
+    """Detecta creación de temas sin usar filtros especiales."""
     if update.message and update.message.forum_topic_created:
         await topic_created(update, context)
 
@@ -99,7 +99,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================
 
 async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Devuelve el GROUP_ID sin usar Markdown para evitar errores."""
+    """Devuelve el GROUP_ID sin Markdown para evitar errores."""
     chat = update.effective_chat
 
     if chat.type not in ("group", "supergroup"):
@@ -140,7 +140,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot = context.bot
 
-    # Recorre el hilo en orden cronológico
+    # Reenviar mensajes del hilo en orden cronológico
     async for msg in bot.get_chat_history(
         chat_id=group_id,
         message_thread_id=topic_id,
@@ -148,21 +148,21 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         oldest_first=True
     ):
         try:
-            await bot.copy_message(
+            await bot.forward_message(
                 chat_id=query.from_user.id,
                 from_chat_id=group_id,
-                message_id=msg.message_id
+                message_id=msg.message_id,
+                protect_content=True  # Oculta remitente y origen
             )
-        except:
+        except Exception:
             pass
 
 
 # ==========================
-#   MAIN — ARRANQUE ESTABLE PARA RAILWAY
+#   MAIN — ESTABLE PARA RAILWAY
 # ==========================
 
 async def main():
-    """Arranque estable sin problemas de event loop."""
     await init_db()
 
     token = os.getenv("BOT_TOKEN")
@@ -183,7 +183,7 @@ async def main():
     await application.start()
     await application.updater.start_polling()
 
-    # Mantener el bot vivo
+    # Mantener vivo el bot
     await asyncio.Event().wait()
 
 
