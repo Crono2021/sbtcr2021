@@ -1,7 +1,6 @@
 import os
 import json
 from pathlib import Path
-from html import escape
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -17,13 +16,13 @@ from telegram.ext import (
 )
 
 # ======================================================
-#   VARIABLES
+#   CONFIGURACIÓN
 # ======================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
-# SOLO ESTE USER PUEDE BORRAR / REINICIAR
-OWNER_ID = 5540195020
+# Owner fijo según tu petición
+OWNER_ID = 5540195020  
 
 # Carpeta persistente
 DATA_DIR = Path("/data")
@@ -32,7 +31,7 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 
 
 # ======================================================
-#   CARGA / GUARDA TEMAS
+#   CARGA / GUARDA DATOS
 # ======================================================
 def load_topics():
     if not TOPICS_FILE.exists():
@@ -40,7 +39,7 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {}
 
 
@@ -66,20 +65,22 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Guardamos el nombre EXACTO sin escape
+    # Detectar nombre real del tema
     if topic_id not in topics:
         if msg.forum_topic_created:
-            topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
+            topic_name = msg.forum_topic_created.name
         else:
             topic_name = f"Tema {topic_id}"
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
-        # Aquí SÍ escapamos porque usamos HTML en el mensaje
-        await msg.reply_text(
-            f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
-            parse_mode="HTML",
-        )
+        try:
+            await msg.reply_text(
+                f"📄 Tema detectado y guardado:\n<b>{topic_name}</b>",
+                parse_mode="HTML",
+            )
+        except:
+            pass
 
     # Guardar mensaje
     topics[topic_id]["messages"].append({"id": msg.message_id})
@@ -87,7 +88,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /TEMAS → LISTA
+#   /TEMAS → LISTA ORDENADA
 # ======================================================
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -95,33 +96,33 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usa /temas en privado.")
         return
 
-    try:
-        topics = load_topics()
+    topics = load_topics()
 
-        if not topics:
-            await chat.send_message("📭 No hay temas detectados aún.")
-            return
+    if not topics:
+        await chat.send_message("📭 No hay temas detectados aún.")
+        return
 
-        keyboard = []
-        for tid, data in topics.items():
-            # OJO: en botones NO usamos escape(), es texto plano
-            shown_name = data["name"]
-            keyboard.append(
-                [InlineKeyboardButton(f"📌 {shown_name}", callback_data=f"t:{tid}")]
-            )
+    # Orden alfabético real
+    sorted_topics = sorted(
+        topics.items(),
+        key=lambda item: item[1]["name"].lower()
+    )
 
-        await chat.send_message(
-            "📚 <b>Temas detectados:</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+    keyboard = []
+    for tid, data in sorted_topics:
+        keyboard.append(
+            [InlineKeyboardButton(f"📌 {data['name']}", callback_data=f"t:{tid}")]
         )
 
-    except Exception as e:
-        await chat.send_message(f"❌ Error en /temas: {e}")
+    await chat.send_message(
+        "📚 <b>Temas detectados:</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 # ======================================================
-#   CALLBACK → reenviar contenido
+#   CALLBACK → ENVIAR CONTENIDO DEL TEMA
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -150,7 +151,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 protect_content=True,
             )
             count += 1
-        except Exception:
+        except:
             pass
 
     await bot.send_message(
@@ -160,7 +161,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   SOLO OWNER → /borrartema
+#   /BORRARTEMA (solo owner)
 # ======================================================
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -174,12 +175,16 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay temas para borrar.")
         return
 
+    # Orden alfabético
+    sorted_topics = sorted(
+        topics.items(),
+        key=lambda item: item[1]["name"].lower()
+    )
+
     keyboard = []
-    for tid, data in topics.items():
-        # Botones: texto plano, sin escape
-        shown_name = data["name"]
+    for tid, data in sorted_topics:
         keyboard.append(
-            [InlineKeyboardButton(f"❌ {shown_name}", callback_data=f"del:{tid}")]
+            [InlineKeyboardButton(f"❌ {data['name']}", callback_data=f"del:{tid}")]
         )
 
     await chat.send_message(
@@ -200,23 +205,23 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
+
     if topic_id not in topics:
-        await query.edit_message_text("❌ Tema no existe.")
+        await query.edit_message_text("❌ Ese tema ya no existe.")
         return
 
     deleted_name = topics[topic_id]["name"]
     del topics[topic_id]
     save_topics(topics)
 
-    # Aquí sí escapamos porque usamos HTML
     await query.edit_message_text(
-        f"🗑 Tema eliminado:\n<b>{escape(deleted_name)}</b>",
+        f"🗑 Tema eliminado:\n<b>{deleted_name}</b>",
         parse_mode="HTML",
     )
 
 
 # ======================================================
-#   SOLO OWNER → reiniciar base de datos
+#   /REINICIAR_DB (solo owner)
 # ======================================================
 async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -236,7 +241,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-    # Ejecuta automáticamente /temas
+    # Mostrar lista directamente
     return await temas(update, context)
 
 
@@ -249,11 +254,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
-    # Comandos solo owner
+    # solo owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
-    # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
 
