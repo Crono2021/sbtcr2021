@@ -19,9 +19,12 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
-# Carpeta persistente
+# ---------------------------------------------------------
+#   RUTA PERSISTENTE DE RAILWAY
+# ---------------------------------------------------------
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 TOPICS_FILE = DATA_DIR / "topics.json"
 
 
@@ -31,6 +34,7 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 def load_topics():
     if not TOPICS_FILE.exists():
         return {}
+
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -60,6 +64,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
+    # Nuevo tema
     if topic_id not in topics:
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
@@ -73,9 +78,10 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📄 Tema detectado y guardado:\n<b>{html.escape(topic_name)}</b>",
                 parse_mode="HTML",
             )
-        except Exception:
+        except:
             pass
 
+    # Guardar mensaje
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
@@ -155,7 +161,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
-#   /BORRARTEMA -> LISTA DE TEMAS PARA ELIMINAR
+#   /BORRARTEMA -> LISTA DE TEMAS
 # ---------------------------------------------------------
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -212,15 +218,56 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------
+#   /REINICIAR_DB → BORRAR TODO
+# ---------------------------------------------------------
+async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+
+    if chat.type != "private":
+        await update.message.reply_text("Usa /reiniciar_db en privado.")
+        return
+
+    await chat.send_message(
+        "⚠️ <b>ATENCIÓN</b>\n"
+        "Esto borrará TODOS los temas guardados.\n\n"
+        "Confirma para continuar:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑 Confirmar borrado total", callback_data="reset:confirm")]
+        ])
+    )
+
+
+async def confirmar_reinicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        if TOPICS_FILE.exists():
+            TOPICS_FILE.unlink()
+
+        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        await query.edit_message_text(
+            "🧹 Base de datos reiniciada correctamente.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
+
+
+# ---------------------------------------------------------
 #   /START
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Bot activo.\n"
         f"• Grupo configurado: <code>{GROUP_ID}</code>\n"
-        "• Detecta temas automáticamente.\n"
+        "• Detecta y guarda temas automáticamente.\n"
         "• Usa /temas para verlos.\n"
-        "• Usa /borrartema para eliminarlos.",
+        "• Usa /borrartema para eliminar uno.\n"
+        "• Usa /reiniciar_db para borrar todos.",
         parse_mode="HTML",
     )
 
@@ -234,9 +281,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CommandHandler("borrartema", borrartema))
+    app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
+    app.add_handler(CallbackQueryHandler(confirmar_reinicio, pattern="^reset:confirm$"))
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
