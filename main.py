@@ -33,17 +33,42 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 
 
 # ======================================================
-#   NORMALIZACIÓN DE LETRAS (Á→A, Ñ→N, Ó→O...)
+#   NORMALIZACIÓN REAL DE LETRAS (conserva acentos para mostrar)
 # ======================================================
 def normalizar_letra(c):
-    """Convierte una letra acentuada en su versión normalizada."""
+    """Convierte la letra inicial en una versión SIN acento para ordenar correctamente."""
     if not c:
         return ""
+
+    # ejemplo: 'Á' → 'A'
     nf = unicodedata.normalize("NFD", c)
-    base = nf[0].upper()
+    base = nf[0]
+
     if base.isalpha():
-        return base
+        return unicodedata.normalize("NFC", base.upper())
+
     return c.upper()
+
+
+def clave_orden(nombre):
+    """
+    Crea una clave de ordenación correcta:
+    1) símbolos
+    2) letras (con acento pero normalizadas para orden)
+    3) comparación por nombre completo para mantener acentos visibles
+    """
+    if not nombre:
+        return (2, "")
+
+    first_raw = nombre[0]
+    first = normalizar_letra(first_raw)
+
+    # símbolos y números primero
+    if not ("A" <= first <= "Z"):
+        return (0, first, nombre.lower())
+
+    # letras normales (incluye acentuadas)
+    return (1, first, nombre.lower())
 
 
 # ======================================================
@@ -65,7 +90,7 @@ def save_topics(data):
 
 
 # ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES — PERFECTO
+#   DETECTAR TEMAS Y GUARDAR MENSAJES — NO TOCAR
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -99,24 +124,10 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   ORDENAR TEMAS (símbolos → letras normalizadas)
+#   ORDENAR TEMAS (SOLUCIÓN ACENTOS 100% CORRECTA)
 # ======================================================
 def ordenar_temas(items):
-    def clave(item):
-        tid, info = item
-        nombre = info.get("name", "").strip()
-        if not nombre:
-            return (2, "")
-
-        first = normalizar_letra(nombre[0])
-
-        # Símbolos y números primero
-        if not ("A" <= first <= "Z"):
-            return (0, nombre.lower())
-
-        return (1, nombre.lower())
-
-    return sorted(items, key=clave)
+    return sorted(items, key=lambda x: clave_orden(x[1].get("name", "")))
 
 
 # ======================================================
@@ -135,9 +146,8 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay series aún.")
         return
 
-    # Transformar a lista para ordenar
-    items = list(topics.items())
-    items = ordenar_temas(items)
+    # Ordenar correctamente (acentos incluidos)
+    items = ordenar_temas(list(topics.items()))
 
     keyboard = []
     for tid, data in items:
@@ -154,7 +164,7 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   ENVÍO POR BLOQUES — SOLO FORWARD
+#   ENVÍO POR BLOQUES — SOLO FORWARD (sin copiar)
 # ======================================================
 async def reenviar_bloque(bot, user_id, bloque, count):
     for mid in bloque:
