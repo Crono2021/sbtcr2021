@@ -50,7 +50,7 @@ def save_topics(data):
 
 
 # ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES  (ARREGLADO)
+#   DETECTAR TEMAS Y GUARDAR MENSAJES
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -66,15 +66,12 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Crear registro del tema si no existía
     if topic_id not in topics:
 
-        # 1) Si viene desde el evento forum_topic_created
+        # Intento obtener nombre real del tema
         if msg.forum_topic_created:
             topic_name = msg.forum_topic_created.name
-
         else:
-            # 2) Obtener nombre real desde Telegram
             try:
                 topic_info = await context.bot.get_forum_topic(
                     chat_id=GROUP_ID,
@@ -82,7 +79,6 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 topic_name = topic_info.name
             except:
-                # 3) Último recurso
                 topic_name = f"Tema {topic_id}"
 
         topics[topic_id] = {"name": topic_name, "messages": []}
@@ -92,7 +88,6 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Guardar cada mensaje dentro del tema
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
@@ -103,11 +98,9 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def ordenar_temas(topics: dict):
     def clave(nombre):
         primer = nombre[0]
-
         if not primer.isalpha():
-            return (0, nombre.lower())  # símbolos y números primero
-
-        return (1, nombre.lower())  # luego letras
+            return (0, nombre.lower())
+        return (1, nombre.lower())
 
     return dict(sorted(topics.items(), key=lambda x: clave(x[1]["name"])))
 
@@ -123,7 +116,6 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     topics = load_topics()
-
     if not topics:
         await chat.send_message("📭 No hay series aún.")
         return
@@ -145,9 +137,9 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   REENVÍO PURO (sin copy)
+#   REENVÍO PURO
 # ======================================================
-async def reenviar_bloque(bot, user_id, bloque, count, omitidos):
+async def reenviar_bloque(bot, user_id, bloque, count):
     for mid in bloque:
         try:
             await bot.forward_message(
@@ -156,10 +148,8 @@ async def reenviar_bloque(bot, user_id, bloque, count, omitidos):
                 message_id=mid
             )
             count += 1
-
-        except Exception as e:
-            # Guardar mensajes realmente inexistentes
-            omitidos.append(mid)
+        except Exception:
+            pass
 
     return count
 
@@ -175,7 +165,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
-
     if topic_id not in topics:
         await query.edit_message_text("❌ Tema no encontrado.")
         return
@@ -189,24 +178,20 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensajes.sort()
 
     enviados = 0
-    omitidos = []
-
     BLOQUE = 25
 
     for i in range(0, len(mensajes), BLOQUE):
         bloque = mensajes[i:i + BLOQUE]
-        enviados = await reenviar_bloque(bot, user_id, bloque, enviados, omitidos)
+        enviados = await reenviar_bloque(bot, user_id, bloque, enviados)
 
-    # Resumen
-    txt = f"✔ Envío completado. {enviados} mensajes enviados 🎉"
-    if omitidos:
-        txt += f"\n⚠ {len(omitidos)} no existen y fueron omitidos."
-
-    await bot.send_message(chat_id=user_id, text=txt)
+    await bot.send_message(
+        chat_id=user_id,
+        text=f"✔ Envío completado. {enviados} mensajes enviados 🎉"
+    )
 
 
 # ======================================================
-#   /UPDATE — SOLO OWNER — actualizar un tema
+#   UPDATE MANUAL POR TEMA
 # ======================================================
 async def update_topic_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -233,7 +218,7 @@ async def update_topic_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   CALLBACK → actualizar tema individual
+#   CALLBACK UPDATE POR TEMA
 # ======================================================
 async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -243,7 +228,6 @@ async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
-
     if topic_id not in topics:
         await query.edit_message_text("❌ Ese tema ya no existe.")
         return
@@ -254,7 +238,6 @@ async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensajes = topics[topic_id]["messages"]
 
     nuevos = []
-    eliminados = []
 
     for m in mensajes:
         mid = m["id"]
@@ -265,35 +248,30 @@ async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=mid
             )
             nuevos.append({"id": mid})
-
         except:
-            eliminados.append(mid)
+            pass
 
-    # Guardar actualización
     topics[topic_id]["messages"] = nuevos
     save_topics(topics)
 
     await bot.send_message(
         chat_id=update.effective_user.id,
-        text=f"✔ Tema actualizado.\n"
-             f"Válidos: {len(nuevos)}\n"
-             f"Omitidos (no existen): {len(eliminados)}"
+        text=f"✔ Tema actualizado.\nMensajes válidos: {len(nuevos)}"
     )
 
 
 # ======================================================
-#   /BORRARTEMA  — SOLO OWNER
+#   BORRAR TEMA
 # ======================================================
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso.")
         return
 
-    chat = update.effective_chat
     topics = load_topics()
 
     if not topics:
-        await chat.send_message("📭 No hay temas para borrar.")
+        await update.message.reply_text("📭 No hay temas para borrar.")
         return
 
     keyboard = []
@@ -303,16 +281,13 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
         )
 
-    await chat.send_message(
+    await update.message.reply_text(
         "🗑 <b>Selecciona el tema que deseas borrar:</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
-# ======================================================
-#   CALLBACK → eliminar tema
-# ======================================================
 async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -321,12 +296,12 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
+
     if topic_id not in topics:
         await query.edit_message_text("❌ Ese tema ya no existe.")
         return
 
     deleted_name = topics[topic_id]["name"]
-
     del topics[topic_id]
     save_topics(topics)
 
@@ -337,7 +312,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /REINICIAR_DB — SOLO OWNER
+#   /REINICIAR_DB
 # ======================================================
 async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -349,7 +324,7 @@ async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /START → muestra catálogo
+#   START
 # ======================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -368,17 +343,14 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
-    # Owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
     app.add_handler(CommandHandler("update", update_topic_menu))
 
-    # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
     app.add_handler(CallbackQueryHandler(update_topic, pattern="^upd:"))
 
-    # Guardar mensajes
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
