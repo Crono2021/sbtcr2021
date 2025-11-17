@@ -1,9 +1,8 @@
 import os
 import json
-import unicodedata
-import re
+import asyncio
 from pathlib import Path
-from html import escape
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -17,6 +16,7 @@ from telegram.ext import (
     CommandHandler,
     filters,
 )
+from telegram.error import RetryAfter, TelegramError
 
 # ======================================================
 #   CONFIGURACIÓN DEL BOT
@@ -24,7 +24,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 
-# ID DEL OWNER — ÚNICO ADMIN
+# ID DEL OWNER — PERMISOS ESPECIALES
 OWNER_ID = 5540195020
 
 # Carpeta persistente de Railway
@@ -34,7 +34,19 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 
 
 # ======================================================
-#   FUNCIONES DE BASE DE DATOS
+#   UTIL: ESCAPAR SOLO LO NECESARIO PARA HTML
+#   (NO toca comillas, apóstrofes, acentos, etc.)
+# ======================================================
+def html_safe(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+# ======================================================
+#   CARGA / GUARDA TEMAS
 # ======================================================
 def load_topics():
     if not TOPICS_FILE.exists():
@@ -42,7 +54,7 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {}
 
 
@@ -52,67 +64,41 @@ def save_topics(data):
 
 
 # ======================================================
-#   LIMPIAR NOMBRE DEL TEMA (UTF-8 SEGURO)
-# ======================================================
-def limpiar_nombre(nombre: str) -> str:
-    # Normalizar y eliminar caracteres de control / no imprimibles,
-    # pero manteniendo emojis, acentos, etc.
-    nombre = unicodedata.normalize("NFKC", nombre)
-    nombre = "".join(c for c in nombre if c.isprintable())
-    nombre = re.sub(r"[\u0000-\u001F\u007F]", "", nombre)
-    return nombre.strip()
-
-
-# ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES
+#   DETECTAR TEMAS Y GUARDAR MENSAJES  (NO TOCAR)
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg:
+    if msg is None:
         return
 
-    # Solo el grupo configurado
     if msg.chat.id != GROUP_ID:
         return
 
-    # Solo mensajes dentro de temas
     if msg.message_thread_id is None:
         return
 
     topic_id = str(msg.message_thread_id)
     topics = load_topics()
 
-    # Crear registro del tema si no existe
+    # Crear registro del tema si no existía
     if topic_id not in topics:
-        # 1) Si el mensaje ES el de creación del tema
         if msg.forum_topic_created:
-            raw_name = msg.forum_topic_created.name or f"Tema {topic_id}"
+            # nombre REAL del tema
+            topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
         else:
-            # 2) El bot no vio la creación → pedimos el tema real a Telegram
-            try:
-                forum_topic = await context.bot.get_forum_topic(
-                    chat_id=GROUP_ID,
-                    message_thread_id=msg.message_thread_id
-                )
-                raw_name = forum_topic.name or f"Tema {topic_id}"
-            except Exception:
-                # 3) Si también falla, usamos un nombre genérico
-                raw_name = f"Tema {topic_id}"
-
-        topic_name = limpiar_nombre(raw_name)
+            topic_name = f"Tema {topic_id}"
 
         topics[topic_id] = {"name": topic_name, "messages": []}
 
-        # Aviso una sola vez por tema
         try:
             await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
+                f"📄 Tema detectado y guardado:\n<b>{html_safe(topic_name)}</b>",
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
-    # Guardar mensaje dentro del tema
+    # Guardar cada mensaje dentro del tema (id simple)
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
@@ -123,11 +109,14 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def ordenar_temas(topics: dict):
     def clave(nombre: str):
         if not nombre:
-            return (1, "")  # por si acaso
+            return (2, "")  # por si acaso
+
         primer = nombre[0]
+
+        # símbolos / números primero
         if not primer.isalpha():
-            # símbolos y números primero
             return (0, nombre.lower())
+
         # luego letras
         return (1, nombre.lower())
 
@@ -154,7 +143,7 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for tid, data in topics.items():
-        safe_name = escape(data["name"])
+        safe_name = html_safe(data["name"])
         keyboard.append(
             [InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")]
         )
@@ -167,7 +156,39 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   REENVÍO SEGURO EN ORDEN (SOLO forward_message)
+#   HELPER → REENVIAR UN MENSAJE CON REINTENTOS
+#   Siempre usa forward_message (nunca copy).
+# ======================================================
+async def safe_forward(bot, user_id: int, message_id: int) -> bool:
+    while True:
+        try:
+            await bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=GROUP_ID,
+                message_id=message_id,
+            )
+            return True
+
+        except RetryAfter as e:
+            # Flood control: esperamos lo que dice Telegram
+            wait_for = int(getattr(e, "retry_after", 1)) + 1
+            print(f"[safe_forward] Flood control, esperando {wait_for}s…")
+            await asyncio.sleep(wait_for)
+            continue
+
+        except TelegramError as e:
+            # Errores de Telegram (mensaje borrado, etc.)
+            print(f"[safe_forward] TelegramError para {message_id}: {e}")
+            return False
+
+        except Exception as e:
+            # Cualquier otro error -> lo registramos y seguimos
+            print(f"[safe_forward] Error inesperado para {message_id}: {e}")
+            return False
+
+
+# ======================================================
+#   CALLBACK → reenvío ordenado, estable y completo
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -187,27 +208,45 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     user_id = query.from_user.id
 
-    mensajes = [m["id"] for m in topics[topic_id]["messages"]]
-    mensajes.sort()
+    # IDs únicos y ordenados (por si acaso hubiera duplicados)
+    mensajes = sorted({m["id"] for m in topics[topic_id]["messages"]})
+    total = len(mensajes)
+
+    if total == 0:
+        await bot.send_message(
+            chat_id=user_id,
+            text="No hay mensajes guardados en este tema.",
+        )
+        return
+
+    # Mensaje de progreso
+    progreso = await bot.send_message(
+        chat_id=user_id,
+        text=f"⏳ Enviando… 0 / {total}",
+    )
 
     enviados = 0
-    errores = []
+    BATCH = 70  # cada 70 mensajes: pausa + actualización
+    PAUSA_SEGUNDOS = 2
 
-    for mid in mensajes:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=mid
-            )
+    for idx, mid in enumerate(mensajes, start=1):
+        ok = await safe_forward(bot, user_id, mid)
+        if ok:
             enviados += 1
-        except Exception as e:
-            print(f"[ERROR reenviando {mid}]: {e}")
-            errores.append(mid)
 
+        # Cada 70 mensajes (o al final) actualizamos progreso y hacemos pausa
+        if idx % BATCH == 0 or idx == total:
+            try:
+                await progreso.edit_text(f"⏳ Enviando… {enviados} / {total}")
+            except Exception:
+                pass
+            # Pequeña pausa para no apisonar el rate limit
+            await asyncio.sleep(PAUSA_SEGUNDOS)
+
+    # Mensaje final
     await bot.send_message(
         chat_id=user_id,
-        text=f"✔ Envío completado. {enviados} mensajes enviados 🎉"
+        text=f"✅ Envío completado. {enviados} mensajes enviados 🎉",
     )
 
 
@@ -226,9 +265,11 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay temas para borrar.")
         return
 
+    topics = ordenar_temas(topics)
+
     keyboard = []
     for tid, data in topics.items():
-        safe_name = escape(data["name"])
+        safe_name = html_safe(data["name"])
         keyboard.append(
             [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
         )
@@ -261,75 +302,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_topics(topics)
 
     await query.edit_message_text(
-        f"🗑 Tema eliminado:\n<b>{escape(deleted_name)}</b>",
-        parse_mode="HTML",
-    )
-
-
-# ======================================================
-#   /UPDATE — LISTA DE TEMAS A ACTUALIZAR (solo OWNER)
-# ======================================================
-async def update_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-
-    topics = load_topics()
-    if not topics:
-        await update.message.reply_text("📭 No hay temas para actualizar.")
-        return
-
-    keyboard = []
-    for tid, data in topics.items():
-        safe_name = escape(data["name"])
-        keyboard.append(
-            [InlineKeyboardButton(f"🔄 {safe_name}", callback_data=f"upd:{tid}")]
-        )
-
-    await update.message.reply_text(
-        "🔧 <b>Selecciona el tema que deseas actualizar:</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-# ======================================================
-#   CALLBACK → ACTUALIZAR UN TEMA (solo OWNER)
-#   (limpia mensajes que ya no existen)
-# ======================================================
-async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    _, topic_id = query.data.split(":")
-    topic_id = str(topic_id)
-
-    topics = load_topics()
-    if topic_id not in topics:
-        await query.edit_message_text("❌ Tema no encontrado.")
-        return
-
-    # OJO: esto intentará reenviar a OWNER_ID solo para comprobar
-    # que el mensaje existe. Si te molesta el "spam", podemos
-    # cambiarlo a otra estrategia más silenciosa.
-    nuevos = []
-    for m in topics[topic_id]["messages"]:
-        mid = m["id"]
-        try:
-            await context.bot.forward_message(
-                chat_id=OWNER_ID,
-                from_chat_id=GROUP_ID,
-                message_id=mid
-            )
-            nuevos.append(m)
-        except Exception as e:
-            print(f"[UPDATE] Mensaje {mid} no existe, eliminado de la DB: {e}")
-
-    topics[topic_id]["messages"] = nuevos
-    save_topics(topics)
-
-    await query.edit_message_text(
-        "✔ Tema actualizado correctamente.",
+        f"🗑 Tema eliminado:\n<b>{html_safe(deleted_name)}</b>",
         parse_mode="HTML",
     )
 
@@ -369,14 +342,12 @@ def main():
     # Comandos solo owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
-    app.add_handler(CommandHandler("update", update_topics))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
-    app.add_handler(CallbackQueryHandler(update_topic, pattern="^upd:"))
 
-    # Guardar mensajes / detectar temas
+    # Guardar mensajes
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
