@@ -1,8 +1,8 @@
 import os
 import json
-import asyncio
+import math
 from pathlib import Path
-
+from html import escape
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -16,7 +16,6 @@ from telegram.ext import (
     CommandHandler,
     filters,
 )
-from telegram.error import RetryAfter, TelegramError
 
 # ======================================================
 #   CONFIGURACIÓN DEL BOT
@@ -32,48 +31,74 @@ DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOPICS_FILE = DATA_DIR / "topics.json"
 
-
-# ======================================================
-#   UTIL: ESCAPAR SOLO LO NECESARIO PARA HTML
-#   (NO toca comillas, apóstrofes, acentos, etc.)
-# ======================================================
-def html_safe(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+# Tamaño de página (temas por página en listados)
+PAGE_SIZE = 30
+# Cuántos temas se muestran en "Recientes"
+RECENT_LIMIT = 20
 
 
 # ======================================================
 #   CARGA / GUARDA TEMAS
+#   ESTRUCTURA:
+#   {
+#       "12345": {
+#           "name": "Nombre exacto del tema",
+#           "messages": [{"id": 111}, {"id": 112}, ...],
+#           "created_at": 1700000000.0   # timestamp (float)
+#       },
+#       ...
+#   }
 # ======================================================
 def load_topics():
     if not TOPICS_FILE.exists():
         return {}
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+            data = json.load(f)
+            # Normalizamos por si hay temas antiguos sin created_at
+            changed = False
+            for tid, info in list(data.items()):
+                if "name" not in info:
+                    # Tema corrupto, lo saltamos
+                    del data[tid]
+                    changed = True
+                    continue
+                if "messages" not in info:
+                    info["messages"] = []
+                    changed = True
+                if "created_at" not in info:
+                    # Si no hay fecha, ponemos 0 para que quede al final en "recientes"
+                    info["created_at"] = 0
+                    changed = True
+            if changed:
+                save_topics(data)
+            return data
+    except Exception as e:
+        print("[load_topics] ERROR cargando JSON:", e)
         return {}
 
 
 def save_topics(data):
-    with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    try:
+        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print("[save_topics] ERROR guardando JSON:", e)
 
 
 # ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES  (NO TOCAR)
+#   DETECTAR TEMAS Y GUARDAR MENSAJES  (NO TOCAR LÓGICA)
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if msg is None:
         return
 
+    # Solo el grupo configurado
     if msg.chat.id != GROUP_ID:
         return
 
+    # Solo mensajes dentro de un tema
     if msg.message_thread_id is None:
         return
 
@@ -83,22 +108,30 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Crear registro del tema si no existía
     if topic_id not in topics:
         if msg.forum_topic_created:
-            # nombre REAL del tema
+            # Nombre EXACTO del tema en Telegram
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
         else:
             topic_name = f"Tema {topic_id}"
 
-        topics[topic_id] = {"name": topic_name, "messages": []}
+        topics[topic_id] = {
+            "name": topic_name,
+            "messages": [],
+            "created_at": msg.date.timestamp() if msg.date else 0,
+        }
 
         try:
             await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{html_safe(topic_name)}</b>",
+                f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
                 parse_mode="HTML",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print("[detect] Error al avisar tema nuevo:", e)
+    else:
+        # Si ya existía pero no tiene created_at (casos antiguos), lo ponemos ahora
+        if "created_at" not in topics[topic_id]:
+            topics[topic_id]["created_at"] = msg.date.timestamp() if msg.date else 0
 
-    # Guardar cada mensaje dentro del tema (id simple)
+    # Guardar cada mensaje dentro del tema
     topics[topic_id]["messages"].append({"id": msg.message_id})
     save_topics(topics)
 
@@ -106,99 +139,366 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   ORDENAR TEMAS (símbolos/números primero)
 # ======================================================
-def ordenar_temas(topics: dict):
-    def clave(nombre: str):
+def ordenar_temas(items):
+    """
+    items: iterable de (topic_id, info_dict)
+    Devuelve lista ordenada por:
+      1) símbolos / números / otros primero
+      2) luego letras A-Z
+      3) dentro de cada grupo, por nombre (case-insensitive)
+    """
+    def clave(item):
+        _tid, info = item
+        nombre = info.get("name", "").strip()
         if not nombre:
-            return (2, "")  # por si acaso
+            return (2, "")  # vacíos al final
 
         primer = nombre[0]
-
-        # símbolos / números primero
+        # Si NO es letra (número, símbolo, etc) => grupo 0 (primero)
         if not primer.isalpha():
             return (0, nombre.lower())
-
-        # luego letras
+        # Letras => grupo 1
         return (1, nombre.lower())
 
-    return dict(sorted(topics.items(), key=lambda x: clave(x[1]["name"])))
+    return sorted(items, key=clave)
+
+
+def filtrar_por_letra(topics, letter):
+    """
+    Devuelve lista [(tid, info), ...] filtrada por primera letra.
+    letter: 'A'..'Z' o '#'
+    """
+    letter = letter.upper()
+    filtrados = []
+
+    for tid, info in topics.items():
+        nombre = info.get("name", "")
+        nombre_strip = nombre.strip()
+        if not nombre_strip:
+            continue
+        first = nombre_strip[0].upper()
+
+        if letter == "#":
+            # Todo lo que NO empiece por A-Z
+            if not ("A" <= first <= "Z"):
+                filtrados.append((tid, info))
+        else:
+            if first == letter:
+                filtrados.append((tid, info))
+
+    # Ordenamos usando la misma lógica
+    return ordenar_temas(filtrados)
 
 
 # ======================================================
-#   /TEMAS → LISTA ORDENADA
+#   TECLADO PRINCIPAL (ABECEDARIO + Buscar + Recientes)
 # ======================================================
+def build_main_keyboard():
+    rows = []
+    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+    # Filas de 5 letras
+    for i in range(0, len(letters), 5):
+        chunk = letters[i:i + 5]
+        row = [
+            InlineKeyboardButton(l, callback_data=f"letter:{l}")
+            for l in chunk
+        ]
+        rows.append(row)
+
+    # Fila para '#'
+    rows.append([
+        InlineKeyboardButton("#", callback_data="letter:#")
+    ])
+
+    # Fila Buscar + Recientes
+    rows.append([
+        InlineKeyboardButton("🔍 Buscar", callback_data="search"),
+        InlineKeyboardButton("🕒 Recientes", callback_data="recent"),
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+async def show_main_menu(chat):
+    await chat.send_message(
+        "🎬 <b>Catálogo de series</b>\n"
+        "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.",
+        parse_mode="HTML",
+        reply_markup=build_main_keyboard(),
+    )
+
+
+# ======================================================
+#   /START y /TEMAS → muestran MENÚ PRINCIPAL
+# ======================================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type != "private":
+        await update.message.reply_text("Entra en privado conmigo para ver el catálogo 😊")
+        return
+    await show_main_menu(chat)
+
+
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-
     if chat.type != "private":
         await update.message.reply_text("Usa /temas en privado.")
         return
+    await show_main_menu(chat)
 
+
+# ======================================================
+#   HANDLER: letra pulsada → lista paginada
+# ======================================================
+def build_letter_page(letter, page, topics_dict):
+    filtrados = filtrar_por_letra(topics_dict, letter)
+
+    total = len(filtrados)
+    if total == 0:
+        return (
+            f"📭 No hay series que empiecen por <b>{escape(letter)}</b>.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]]),
+        )
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    slice_items = filtrados[start_idx:end_idx]
+
+    keyboard = []
+    for tid, info in slice_items:
+        name = info.get("name", "")
+        safe_name = escape(name)
+        keyboard.append([
+            InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")
+        ])
+
+    # Fila navegación
+    nav_row = []
+    if total_pages > 1:
+        if page > 1:
+            nav_row.append(
+                InlineKeyboardButton("⬅️ Anterior", callback_data=f"page:{letter}:{page-1}")
+            )
+        nav_row.append(
+            InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop")
+        )
+        if page < total_pages:
+            nav_row.append(
+                InlineKeyboardButton("Siguiente ➡️", callback_data=f"page:{letter}:{page+1}")
+            )
+    if nav_row:
+        keyboard.append(nav_row)
+
+    # Fila volver
+    keyboard.append([
+        InlineKeyboardButton("🔙 Volver", callback_data="main_menu")
+    ])
+
+    if letter == "#":
+        title = "🎬 <b>Series que empiezan por número o símbolo</b>"
+    else:
+        title = f"🎬 <b>Series que empiezan por “{escape(letter)}”</b>"
+
+    text = f"{title}\nMostrando {len(slice_items)} de {total}."
+
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def on_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, letter = query.data.split(":", 1)
     topics = load_topics()
 
+    text, markup = build_letter_page(letter, 1, topics)
+
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except Exception as e:
+        print("[on_letter] Error editando mensaje:", e)
+
+
+async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, letter, page_str = query.data.split(":", 2)
+    page = int(page_str)
+
+    topics = load_topics()
+    text, markup = build_letter_page(letter, page, topics)
+
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except Exception as e:
+        print("[on_page] Error editando mensaje:", e)
+
+
+# ======================================================
+#   HANDLER: botón "Volver" y "Buscar" y "Recientes"
+# ======================================================
+async def on_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat = query.message.chat
+    try:
+        await query.edit_message_text(
+            "🎬 <b>Catálogo de series</b>\n"
+            "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.",
+            parse_mode="HTML",
+            reply_markup=build_main_keyboard(),
+        )
+    except Exception as e:
+        print("[on_main_menu] Error editando mensaje:", e)
+
+
+async def on_search_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat = query.message.chat
+    if chat.type != "private":
+        await query.edit_message_text("🔍 Usa la búsqueda en privado conmigo.")
+        return
+    try:
+        await query.edit_message_text(
+            "🔍 <b>Buscar serie</b>\n"
+            "Escribe el nombre o parte del nombre de la serie en el chat.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]
+            ]),
+        )
+    except Exception as e:
+        print("[on_search_btn] Error editando mensaje:", e)
+
+
+async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat = query.message.chat
+    if chat.type != "private":
+        await query.edit_message_text("🕒 Usa Recientes en privado conmigo.")
+        return
+
+    topics = load_topics()
+    if not topics:
+        await query.edit_message_text(
+            "📭 No hay series aún.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]
+            ]),
+        )
+        return
+
+    # Ordenamos por created_at descendente
+    items = list(topics.items())
+    items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
+    items = items[:RECENT_LIMIT]
+
+    keyboard = []
+    for tid, info in items:
+        safe_name = escape(info.get("name", ""))
+        keyboard.append([
+            InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("🔙 Volver", callback_data="main_menu")
+    ])
+
+    try:
+        await query.edit_message_text(
+            "🕒 <b>Series recientes</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[on_recent_btn] Error editando mensaje:", e)
+
+
+# ======================================================
+#   BÚSQUEDA POR TEXTO (solo en privado)
+# ======================================================
+async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if msg is None:
+        return
+
+    chat = msg.chat
+    if chat.type != "private":
+        return  # Ignoramos texto en grupo para búsqueda
+
+    query = msg.text.strip()
+    if not query:
+        await chat.send_message("Escribe parte del nombre de la serie para buscar.")
+        return
+
+    topics = load_topics()
     if not topics:
         await chat.send_message("📭 No hay series aún.")
         return
 
-    topics = ordenar_temas(topics)
+    # Filtrado por coincidencia parcial (case-insensitive)
+    query_lower = query.lower()
+    matches = [
+        (tid, info)
+        for tid, info in topics.items()
+        if query_lower in info.get("name", "").lower()
+    ]
+
+    if not matches:
+        await chat.send_message(
+            f"🔍 No encontré ninguna serie que contenga: <b>{escape(query)}</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Orden y límite a 30 resultados
+    matches = ordenar_temas(matches)
+    matches = matches[:30]
 
     keyboard = []
-    for tid, data in topics.items():
-        safe_name = html_safe(data["name"])
-        keyboard.append(
-            [InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")]
-        )
+    for tid, info in matches:
+        safe_name = escape(info.get("name", ""))
+        keyboard.append([
+            InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("🔙 Volver", callback_data="main_menu")
+    ])
 
     await chat.send_message(
-        "🎬 <b>Catálogo de series</b>",
+        f"🔍 Resultados para: <b>{escape(query)}</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 # ======================================================
-#   HELPER → REENVIAR UN MENSAJE CON REINTENTOS
-#   Siempre usa forward_message (nunca copy).
-# ======================================================
-async def safe_forward(bot, user_id: int, message_id: int) -> bool:
-    while True:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=message_id,
-            )
-            return True
-
-        except RetryAfter as e:
-            # Flood control: esperamos lo que dice Telegram
-            wait_for = int(getattr(e, "retry_after", 1)) + 1
-            print(f"[safe_forward] Flood control, esperando {wait_for}s…")
-            await asyncio.sleep(wait_for)
-            continue
-
-        except TelegramError as e:
-            # Errores de Telegram (mensaje borrado, etc.)
-            print(f"[safe_forward] TelegramError para {message_id}: {e}")
-            return False
-
-        except Exception as e:
-            # Cualquier otro error -> lo registramos y seguimos
-            print(f"[safe_forward] Error inesperado para {message_id}: {e}")
-            return False
-
-
-# ======================================================
-#   CALLBACK → reenvío ordenado, estable y completo
+#   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    _, topic_id = query.data.split(":")
+    _, topic_id = query.data.split(":", 1)
     topic_id = str(topic_id)
 
     topics = load_topics()
-
     if topic_id not in topics:
         await query.edit_message_text("❌ Tema no encontrado.")
         return
@@ -208,45 +508,26 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     user_id = query.from_user.id
 
-    # IDs únicos y ordenados (por si acaso hubiera duplicados)
-    mensajes = sorted({m["id"] for m in topics[topic_id]["messages"]})
-    total = len(mensajes)
-
-    if total == 0:
-        await bot.send_message(
-            chat_id=user_id,
-            text="No hay mensajes guardados en este tema.",
-        )
-        return
-
-    # Mensaje de progreso
-    progreso = await bot.send_message(
-        chat_id=user_id,
-        text=f"⏳ Enviando… 0 / {total}",
-    )
+    # Mensajes en el orden en que se guardaron (cronológico)
+    mensajes = [m["id"] for m in topics[topic_id]["messages"]]
 
     enviados = 0
-    BATCH = 70  # cada 70 mensajes: pausa + actualización
-    PAUSA_SEGUNDOS = 2
 
-    for idx, mid in enumerate(mensajes, start=1):
-        ok = await safe_forward(bot, user_id, mid)
-        if ok:
+    for mid in mensajes:
+        try:
+            await bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=GROUP_ID,
+                message_id=mid,
+            )
             enviados += 1
+        except Exception as e:
+            # No hacemos copy, solo anotamos el error por consola
+            print(f"[send_topic] ERROR reenviando {mid}: {e}")
 
-        # Cada 70 mensajes (o al final) actualizamos progreso y hacemos pausa
-        if idx % BATCH == 0 or idx == total:
-            try:
-                await progreso.edit_text(f"⏳ Enviando… {enviados} / {total}")
-            except Exception:
-                pass
-            # Pequeña pausa para no apisonar el rate limit
-            await asyncio.sleep(PAUSA_SEGUNDOS)
-
-    # Mensaje final
     await bot.send_message(
         chat_id=user_id,
-        text=f"✅ Envío completado. {enviados} mensajes enviados 🎉",
+        text=f"✔ Envío completado. {enviados} mensajes reenviados 🎉",
     )
 
 
@@ -265,11 +546,11 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay temas para borrar.")
         return
 
-    topics = ordenar_temas(topics)
+    items = ordenar_temas(list(topics.items()))
 
     keyboard = []
-    for tid, data in topics.items():
-        safe_name = html_safe(data["name"])
+    for tid, info in items:
+        safe_name = escape(info.get("name", ""))
         keyboard.append(
             [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
         )
@@ -288,7 +569,12 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    _, topic_id = query.data.split(":")
+    # Seguridad extra: solo OWNER
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("⛔ No tienes permiso para esta acción.")
+        return
+
+    _, topic_id = query.data.split(":", 1)
     topic_id = str(topic_id)
 
     topics = load_topics()
@@ -302,7 +588,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_topics(topics)
 
     await query.edit_message_text(
-        f"🗑 Tema eliminado:\n<b>{html_safe(deleted_name)}</b>",
+        f"🗑 Tema eliminado:\n<b>{escape(deleted_name)}</b>",
         parse_mode="HTML",
     )
 
@@ -320,22 +606,12 @@ async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /START → muestra catálogo
-# ======================================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 ¡Hola! Selecciona una serie:",
-        parse_mode="HTML",
-    )
-    return await temas(update, context)
-
-
-# ======================================================
 #   MAIN
 # ======================================================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Comandos usuario
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
@@ -343,11 +619,21 @@ def main():
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
 
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
-    app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
+    # Callbacks navegación
+    app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
+    app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:"))
+    app.add_handler(CallbackQueryHandler(on_main_menu, pattern=r"^main_menu$"))
+    app.add_handler(CallbackQueryHandler(on_search_btn, pattern=r"^search$"))
+    app.add_handler(CallbackQueryHandler(on_recent_btn, pattern=r"^recent$"))
 
-    # Guardar mensajes
+    # Callbacks de temas
+    app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
+    app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
+
+    # Búsqueda por texto en privado
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
+
+    # Guardar mensajes de temas (en grupo)
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
