@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from pathlib import Path
 from html import escape
 from telegram import (
@@ -91,9 +92,11 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def ordenar_temas(topics: dict):
     def clave(nombre):
         primer = nombre[0]
-        if not primer.isalpha():  # símbolos y números primero
-            return (0, nombre.lower())
-        return (1, nombre.lower())
+
+        if not primer.isalpha():
+            return (0, nombre.lower())  # símbolos y números primero
+
+        return (1, nombre.lower())  # luego letras
 
     return dict(sorted(topics.items(), key=lambda x: clave(x[1]["name"])))
 
@@ -131,12 +134,12 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   REENVÍO POR BLOQUES (25) + PLAN B
+#   REENVÍO POR BLOQUES CON PLAN B AUTOMÁTICO
 # ======================================================
 async def reenviar_bloque(bot, user_id, bloque, count, errores):
     for mid in bloque:
         try:
-            # Intento rápido
+            # Intento 1 → reenviar (rápido)
             await bot.forward_message(
                 chat_id=user_id,
                 from_chat_id=GROUP_ID,
@@ -146,7 +149,7 @@ async def reenviar_bloque(bot, user_id, bloque, count, errores):
 
         except Exception:
             try:
-                # Plan B más lento
+                # Plan B → copiar (más lento pero seguro)
                 await bot.copy_message(
                     chat_id=user_id,
                     from_chat_id=GROUP_ID,
@@ -161,7 +164,7 @@ async def reenviar_bloque(bot, user_id, bloque, count, errores):
 
 
 # ======================================================
-#   CALLBACK → REENVÍO ORDENADO
+#   CALLBACK → reenvío ordenado Y SEGURO
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -182,7 +185,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
 
-    mensajes.sort()  # orden real
+    mensajes.sort()
 
     enviados = 0
     errores = []
@@ -200,7 +203,7 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /BORRARTEMA — SOLO OWNER
+#   /BORRARTEMA  — SOLO OWNER
 # ======================================================
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -229,7 +232,7 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   CALLBACK → BORRAR TEMA
+#   CALLBACK → eliminar tema
 # ======================================================
 async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -255,9 +258,21 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /UPDATE — SOLO OWNER (MENÚ)
+#   /REINICIAR_DB — SOLO OWNER
 # ======================================================
-async def update_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+
+    save_topics({})
+    await update.message.reply_text("🗑 Base de datos reiniciada.")
+
+
+# ======================================================
+#   /UPDATE — SOLO OWNER — ACTUALIZAR UN TEMA
+# ======================================================
+async def update_tema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
         return
@@ -272,37 +287,38 @@ async def update_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for tid, data in topics.items():
         safe_name = escape(data["name"])
-        keyboard.append([
-            InlineKeyboardButton(f"🔄 {safe_name}", callback_data=f"upd:{tid}")
-        ])
+        keyboard.append(
+            [InlineKeyboardButton(f"🔄 {safe_name}", callback_data=f"upd:{tid}")]
+        )
 
     await chat.send_message(
-        "🔄 <b>Selecciona el tema que deseas actualizar:</b>",
+        "🔧 <b>Selecciona el tema que deseas actualizar:</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 # ======================================================
-#   CALLBACK → ACTUALIZAR SOLO UN TEMA
+#   CALLBACK — ACTUALIZACIÓN REAL DEL TEMA
 # ======================================================
 async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     _, topic_id = query.data.split(":")
+    topic_id = str(topic_id)
 
     topics = load_topics()
     if topic_id not in topics:
-        await query.edit_message_text("❌ Ese tema no existe.")
+        await query.edit_message_text("❌ Ese tema ya no existe.")
         return
 
     bot = context.bot
     user = update.effective_user
     nombre = topics[topic_id]["name"]
-    mensajes = topics[topic_id]["messages"]
+    mensajes_actuales = topics[topic_id]["messages"]
 
-    nuevos = []
+    mensajes_validos = []
     eliminados = 0
 
     await query.edit_message_text(
@@ -310,27 +326,53 @@ async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-    for msg_info in mensajes:
+    for msg_info in mensajes_actuales:
         mid = msg_info["id"]
+        ok = False
+
+        # 1️⃣ Intento con forward
         try:
-            # Comprobación rápida: intentar copiar
-            await bot.copy_message(
+            temp = await bot.forward_message(
                 chat_id=user.id,
                 from_chat_id=GROUP_ID,
                 message_id=mid
             )
-            nuevos.append(msg_info)
+            ok = True
         except:
+            # 2️⃣ Segundo intento → copy
+            try:
+                temp = await bot.copy_message(
+                    chat_id=user.id,
+                    from_chat_id=GROUP_ID,
+                    message_id=mid
+                )
+                ok = True
+            except:
+                ok = False
+
+        # Borrar mensaje temporal VALIDADO
+        if ok:
+            try:
+                await bot.delete_message(chat_id=user.id, message_id=temp.message_id)
+            except:
+                pass
+
+        if ok:
+            mensajes_validos.append(msg_info)
+        else:
             eliminados += 1
 
-    topics[topic_id]["messages"] = nuevos
+        await asyncio.sleep(0.08)
+
+    # Guardar resultado
+    topics[topic_id]["messages"] = mensajes_validos
     save_topics(topics)
 
     await bot.send_message(
         chat_id=user.id,
         text=(
             f"✔ Tema <b>{escape(nombre)}</b> actualizado.\n"
-            f"• Mensajes válidos: <b>{len(nuevos)}</b>\n"
+            f"• Mensajes válidos: <b>{len(mensajes_validos)}</b>\n"
             f"• Eliminados: <b>{eliminados}</b>"
         ),
         parse_mode="HTML"
@@ -338,19 +380,7 @@ async def update_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /REINICIAR_DB — SOLO OWNER
-# ======================================================
-async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-
-    save_topics({})
-    await update.message.reply_text("🗑 Base de datos reiniciada.")
-
-
-# ======================================================
-#   /START → CATÁLOGO DIRECTO
+#   /START → muestra catálogo
 # ======================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -369,17 +399,17 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("temas", temas))
 
-    # Comandos solo OWNER
+    # Comandos solo owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
-    app.add_handler(CommandHandler("update", update_menu))
+    app.add_handler(CommandHandler("update", update_tema))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(send_topic, pattern="^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern="^del:"))
     app.add_handler(CallbackQueryHandler(update_topic, pattern="^upd:"))
 
-    # Guardar todos los mensajes
+    # Guardar mensajes
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
