@@ -763,16 +763,23 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /SETPELIS — marcar tema actual como Películas (solo OWNER)
+#   /SETPELIS — marcar tema actual como Películas (one-shot)
 # ======================================================
 async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
     msg = update.message
 
-    if user.id != OWNER_ID:
-        await msg.reply_text("⛔ No tienes permiso para usar este comando.")
+    # Si ya hay un tema de pelis, no dejamos cambiarlo (comando de un solo uso)
+    topics = load_topics()
+    existing_pelis_tid = get_pelis_topic_id(topics)
+    if existing_pelis_tid:
+        await msg.reply_text(
+            "🍿 Ya hay un tema configurado como <b>Películas</b>.\n"
+            "No se puede volver a cambiar.",
+            parse_mode="HTML",
+        )
         return
 
+    # Debe ejecutarse dentro del grupo y dentro de un tema
     if msg.chat.id != GROUP_ID or msg.message_thread_id is None:
         await msg.reply_text(
             "🍿 Usa /setpelis dentro del tema de <b>Películas</b> en el grupo.",
@@ -781,10 +788,9 @@ async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     topic_id = str(msg.message_thread_id)
-    topics = load_topics()
 
+    # Aseguramos que el tema existe en la base de datos
     if topic_id not in topics:
-        # Si por lo que sea aún no se ha registrado, lo creamos con nombre genérico
         topic_name = msg.chat.title or f"Tema {topic_id}"
         topics[topic_id] = {
             "name": topic_name,
