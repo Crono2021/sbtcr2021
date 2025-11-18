@@ -1,7 +1,6 @@
 import os
 import json
 import math
-import unicodedata
 from pathlib import Path
 from html import escape
 from telegram import (
@@ -36,134 +35,25 @@ TOPICS_FILE = DATA_DIR / "topics.json"
 PAGE_SIZE = 30
 # Cuántos temas se muestran en "Recientes"
 RECENT_LIMIT = 20
-
-# Alfabeto español con Ñ en su sitio
-ALPHABET = list("ABCDEFGHIJKLMNÑOPQRSTUVWXYZ")
-ALPHABET_INDEX = {ch: i for i, ch in enumerate(ALPHABET)}
-
-
-# ======================================================
-#   HELPERS DE ORDEN Y LETRAS
-# ======================================================
-def get_group_letter(name: str) -> str:
-    """
-    Devuelve la letra de grupo para un nombre:
-    - Á, À, Â... -> A
-    - É... -> E
-    - Ñ -> Ñ
-    - Símbolos / números -> '#'
-    """
-    if not name:
-        return "#"
-
-    ch = name.strip()[0]
-    if not ch:
-        return "#"
-
-    upper = ch.upper()
-
-    # Ñ explícita
-    if upper == "Ñ":
-        return "Ñ"
-
-    # Normalizamos para quitar acentos
-    decomp = unicodedata.normalize("NFD", ch)
-    base = None
-    for c in decomp:
-        if c.isalpha():
-            base = c.upper()
-            break
-
-    if base is None:
-        return "#"
-
-    if base in ALPHABET:
-        return base
-
-    return "#"
-
-
-def is_accented(ch: str) -> bool:
-    """
-    Devuelve True si es una letra acentuada (Á, É, Í, Ó, Ú, Ü, etc.).
-    Ñ NO se considera "acentuada" para la prioridad; tiene su propia letra.
-    """
-    if not ch:
-        return False
-
-    if ch.upper() == "Ñ":
-        return False
-
-    decomp = unicodedata.normalize("NFD", ch)
-    return any(unicodedata.category(c) == "Mn" for c in decomp)
-
-
-def ordenar_temas(items):
-    """
-    items: iterable de (topic_id, info_dict)
-
-    Orden global:
-      0) grupos '#' (símbolos/números)
-      1) grupos de letras A..N, Ñ, O..Z
-    Dentro de cada letra:
-      a) primero las que empiezan por letra acentuada (Á antes que A)
-      b) luego el resto
-      c) por nombre minúscula
-    """
-
-    def clave(item):
-        _tid, info = item
-        nombre = info.get("name", "").strip()
-        if not nombre:
-            return (2, 999, 1, "")  # vacíos muy al final
-
-        first_char = nombre[0]
-        group = get_group_letter(nombre)
-
-        # Grupo principal: '#' primero, luego letras
-        if group == "#":
-            group_type = 0
-            group_pos = -1
-        else:
-            group_type = 1
-            group_pos = ALPHABET_INDEX.get(group, 999)
-
-        # Prioridad acentos: 0 acentuadas, 1 sin acento
-        accent_prio = 0 if is_accented(first_char) else 1
-
-        return (group_type, group_pos, accent_prio, nombre.lower())
-
-    return sorted(items, key=clave)
-
-
-def filtrar_por_letra(topics, letter):
-    """
-    Devuelve lista [(tid, info), ...] filtrada por primera letra.
-    letter: 'A'..'Z', 'Ñ' o '#'
-    """
-    letter = letter.upper()
-    filtrados = []
-
-    for tid, info in topics.items():
-        nombre = info.get("name", "")
-        nombre_strip = nombre.strip()
-        if not nombre_strip:
-            continue
-
-        group = get_group_letter(nombre_strip)
-
-        if letter == "#":
-            if group == "#":
-                filtrados.append((tid, info))
-        else:
-            if group == letter:
-                filtrados.append((tid, info))
-
-    return ordenar_temas(filtrados)
+# Límite de resultados de búsqueda de películas
+MOVIES_LIMIT = 70
 
 
 # ======================================================
 #   CARGA / GUARDA TEMAS
+#   ESTRUCTURA:
+#   {
+#       "12345": {
+#           "name": "Nombre exacto del tema",
+#           "messages": [
+#               {"id": 111},                              # series normales
+#               {"id": 222, "desc": "Pelicula X (2024)"}  # películas
+#           ],
+#           "created_at": 1700000000.0,
+#           "is_movies": true/false (solo para Películas)
+#       },
+#       ...
+#   }
 # ======================================================
 def load_topics():
     if not TOPICS_FILE.exists():
@@ -171,21 +61,31 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Normalizamos por si hay temas antiguos
+
             changed = False
             for tid, info in list(data.items()):
-                if "name" not in info:
+                if not isinstance(info, dict):
                     del data[tid]
                     changed = True
                     continue
-                if "messages" not in info:
+
+                if "name" not in info:
+                    # Tema corrupto, lo saltamos
+                    del data[tid]
+                    changed = True
+                    continue
+
+                if "messages" not in info or not isinstance(info["messages"], list):
                     info["messages"] = []
                     changed = True
+
                 if "created_at" not in info:
                     info["created_at"] = 0
                     changed = True
+
             if changed:
                 save_topics(data)
+
             return data
     except Exception as e:
         print("[load_topics] ERROR cargando JSON:", e)
@@ -201,7 +101,7 @@ def save_topics(data):
 
 
 # ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES
+#   DETECTAR TEMAS Y GUARDAR MENSAJES  (NO TOCAR LÓGICA BASE)
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -222,6 +122,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Crear registro del tema si no existía
     if topic_id not in topics:
         if msg.forum_topic_created:
+            # Nombre EXACTO del tema en Telegram
             topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
         else:
             topic_name = f"Tema {topic_id}"
@@ -240,23 +141,93 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print("[detect] Error al avisar tema nuevo:", e)
     else:
-        # Si ya existía pero no tiene created_at (casos antiguos), lo ponemos ahora
+        # Rellenar created_at si faltara (casos antiguos)
         if "created_at" not in topics[topic_id]:
             topics[topic_id]["created_at"] = msg.date.timestamp() if msg.date else 0
 
-    # Guardar cada mensaje dentro del tema
-    topics[topic_id]["messages"].append({"id": msg.message_id})
+    # Guardar mensaje dentro del tema
+    info = topics[topic_id]
+
+    # Si es el tema especial de películas, guardamos también descripción
+    if info.get("is_movies"):
+        desc = msg.caption or msg.text or ""
+        info["messages"].append({
+            "id": msg.message_id,
+            "desc": desc,
+        })
+    else:
+        # Tema normal (serie)
+        info["messages"].append({"id": msg.message_id})
+
     save_topics(topics)
 
 
 # ======================================================
-#   TECLADO PRINCIPAL (ABECEDARIO + Buscar + Recientes)
+#   ORDENAR TEMAS (símbolos/números primero)
+#   *Ignora el tema marcado como is_movies en los listados de series*
+# ======================================================
+def ordenar_temas(items):
+    """
+    items: iterable de (topic_id, info_dict)
+    Devuelve lista ordenada por:
+      1) símbolos / números / otros primero
+      2) luego letras A-Z
+      3) dentro de cada grupo, por nombre (case-insensitive)
+    """
+    def clave(item):
+        _tid, info = item
+        nombre = info.get("name", "").strip()
+        if not nombre:
+            return (2, "")  # vacíos al final
+
+        first = nombre[0].upper()
+        # Símbolos/números primero
+        if not first.isalpha():
+            return (0, nombre.lower())
+        # Letras después
+        return (1, nombre.lower())
+
+    return sorted(items, key=clave)
+
+
+def filtrar_por_letra(topics, letter):
+    """
+    Devuelve lista [(tid, info), ...] filtrada por primera letra.
+    letter: 'A'..'Z' o '#'
+    NO incluye el tema especial de películas (is_movies=True).
+    """
+    letter = letter.upper()
+    filtrados = []
+
+    for tid, info in topics.items():
+        # Saltamos el tema de películas en los listados normales
+        if info.get("is_movies"):
+            continue
+
+        nombre = info.get("name", "")
+        nombre_strip = nombre.strip()
+        if not nombre_strip:
+            continue
+        first = nombre_strip[0].upper()
+
+        if letter == "#":
+            # Todo lo que NO empiece por A-Z
+            if not ("A" <= first <= "Z"):
+                filtrados.append((tid, info))
+        else:
+            if first == letter:
+                filtrados.append((tid, info))
+
+    # Ordenamos usando la misma lógica
+    return ordenar_temas(filtrados)
+
+
+# ======================================================
+#   TECLADO PRINCIPAL (ABECEDARIO + Buscar + Recientes + Películas)
 # ======================================================
 def build_main_keyboard():
     rows = []
-
-    # Alfabeto español con Ñ
-    letters = ALPHABET[:]  # copia
+    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
     # Filas de 5 letras
     for i in range(0, len(letters), 5):
@@ -278,26 +249,34 @@ def build_main_keyboard():
         InlineKeyboardButton("🕒 Recientes", callback_data="recent"),
     ])
 
+    # Fila especial Películas (ancho completo)
+    rows.append([
+        InlineKeyboardButton("🎬 Películas", callback_data="movies")
+    ])
+
     return InlineKeyboardMarkup(rows)
 
 
 async def show_main_menu(chat):
     await chat.send_message(
         "🎬 <b>Catálogo de series</b>\n"
-        "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.",
+        "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.\n"
+        "También puedes usar el modo especial de <b>Películas</b>.",
         parse_mode="HTML",
         reply_markup=build_main_keyboard(),
     )
 
 
 # ======================================================
-#   /START y /TEMAS → MENÚ PRINCIPAL
+#   /START y /TEMAS → muestran MENÚ PRINCIPAL
 # ======================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type != "private":
         await update.message.reply_text("Entra en privado conmigo para ver el catálogo 😊")
         return
+    # reset modo
+    context.user_data.pop("mode", None)
     await show_main_menu(chat)
 
 
@@ -306,11 +285,13 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type != "private":
         await update.message.reply_text("Usa /temas en privado.")
         return
+    # reset modo
+    context.user_data.pop("mode", None)
     await show_main_menu(chat)
 
 
 # ======================================================
-#   LISTA PAGINADA POR LETRA
+#   HANDLER: letra pulsada → lista paginada
 # ======================================================
 def build_letter_page(letter, page, topics_dict):
     filtrados = filtrar_por_letra(topics_dict, letter)
@@ -409,15 +390,18 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   BOTONES: VOLVER, BUSCAR, RECIENTES
+#   HANDLER: botón "Volver" / "Buscar" / "Recientes"
 # ======================================================
 async def on_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    chat = query.message.chat
+    context.user_data.pop("mode", None)
     try:
         await query.edit_message_text(
             "🎬 <b>Catálogo de series</b>\n"
-            "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.",
+            "Elige una letra, pulsa Recientes o escribe el nombre de una serie para buscar.\n"
+            "También puedes usar el modo especial de <b>Películas</b>.",
             parse_mode="HTML",
             reply_markup=build_main_keyboard(),
         )
@@ -432,6 +416,10 @@ async def on_search_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type != "private":
         await query.edit_message_text("🔍 Usa la búsqueda en privado conmigo.")
         return
+
+    # modo búsqueda de series
+    context.user_data["mode"] = "series"
+
     try:
         await query.edit_message_text(
             "🔍 <b>Buscar serie</b>\n"
@@ -463,7 +451,12 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    items = list(topics.items())
+    # Ignoramos el tema de películas en "Recientes"
+    items = [
+        (tid, info) for tid, info in topics.items()
+        if not info.get("is_movies")
+    ]
+    # Ordenamos por created_at descendente
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
     items = items[:RECENT_LIMIT]
 
@@ -489,7 +482,155 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   BÚSQUEDA POR TEXTO (solo en privado)
+#   MODO PELÍCULAS
+# ======================================================
+async def on_movies_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botón 🎬 Películas en el menú principal."""
+    query = update.callback_query
+    await query.answer()
+    chat = query.message.chat
+
+    if chat.type != "private":
+        await query.edit_message_text("🎬 Usa el modo Películas en privado conmigo.")
+        return
+
+    topics = load_topics()
+    movies_ids = [
+        tid for tid, info in topics.items()
+        if info.get("is_movies")
+    ]
+
+    if not movies_ids:
+        await query.edit_message_text(
+            "🎬 Aún no has configurado el tema especial de <b>Películas</b>.\n\n"
+            "Entra en el tema de Películas en el grupo y escribe /setpelis.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
+            ]),
+        )
+        return
+
+    movies_tid = movies_ids[0]
+    context.user_data["mode"] = "movies"
+    context.user_data["movies_topic_id"] = movies_tid
+
+    await query.edit_message_text(
+        "🎬 <b>Películas</b>\n\n"
+        "Escribe el título de la película que estás buscando.\n"
+        "La búsqueda funciona por el <b>inicio</b> del título.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
+        ]),
+    )
+
+
+async def search_movies(chat, query_text, context: ContextTypes.DEFAULT_TYPE):
+    """Búsqueda dentro del tema especial Películas (por descripción/caption)."""
+    topics = load_topics()
+    movies_tid = context.user_data.get("movies_topic_id")
+
+    if not movies_tid or movies_tid not in topics:
+        await chat.send_message(
+            "🎬 No tengo un tema de <b>Películas</b> configurado.\n"
+            "En el grupo, entra en el tema de Películas y usa /setpelis.",
+            parse_mode="HTML",
+        )
+        return
+
+    info = topics[movies_tid]
+    mensajes = info.get("messages", [])
+
+    if not mensajes:
+        await chat.send_message("📭 Aún no hay películas registradas en ese tema.")
+        return
+
+    q = query_text.strip().lower()
+    if not q:
+        await chat.send_message("Escribe el inicio del título de la película.")
+        return
+
+    # Coincidencia SOLO por el inicio del título (Opción A)
+    matches = []
+    for m in mensajes:
+        desc = (m.get("desc") or "").strip()
+        if not desc:
+            continue
+        if desc.lower().startswith(q):
+            matches.append((m["id"], desc))
+
+    if not matches:
+        await chat.send_message(
+            f"🔍 No he encontrado ninguna película cuyo título empiece por:\n<b>{escape(query_text)}</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Limitamos a MOVIES_LIMIT
+    matches = matches[:MOVIES_LIMIT]
+
+    keyboard = []
+    for mid, desc in matches:
+        texto = desc.strip() or f"ID {mid}"
+        if len(texto) > 60:
+            texto = texto[:57] + "..."
+        safe_text = escape(texto)
+        keyboard.append([
+            InlineKeyboardButton(f"🎬 {safe_text}", callback_data=f"movie:{movies_tid}:{mid}")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")
+    ])
+
+    await chat.send_message(
+        f"🔍 Resultados en <b>Películas</b> para:\n<b>{escape(query_text)}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def send_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reenvía una película concreta desde el tema especial."""
+    query = update.callback_query
+    await query.answer()
+
+    _, topic_id, mid_str = query.data.split(":", 2)
+    topic_id = str(topic_id)
+    try:
+        mid = int(mid_str)
+    except ValueError:
+        await query.edit_message_text("❌ Parámetros inválidos.")
+        return
+
+    bot = context.bot
+    user_id = query.from_user.id
+
+    try:
+        await bot.forward_message(
+            chat_id=user_id,
+            from_chat_id=GROUP_ID,
+            message_id=mid,
+        )
+    except Exception as e:
+        print(f"[send_movie] ERROR reenviando {mid}: {e}")
+        await query.edit_message_text("❌ No se pudo reenviar esa película.")
+        return
+
+    # Mensaje con opciones después de enviar
+    await bot.send_message(
+        chat_id=user_id,
+        text="🎬 Película enviada.\n\n¿Quieres hacer algo más?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")],
+            [InlineKeyboardButton("🎬 Buscar otra película", callback_data="movies")],
+        ]),
+    )
+
+
+# ======================================================
+#   BÚSQUEDA POR TEXTO (series / películas según modo)
 # ======================================================
 async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -498,32 +639,45 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat = msg.chat
     if chat.type != "private":
+        return  # Ignoramos texto en grupo para búsquedas
+
+    query_text = msg.text.strip()
+    if not query_text:
+        await chat.send_message("Escribe algo para buscar.")
         return
 
-    query = msg.text.strip()
-    if not query:
-        await chat.send_message("Escribe parte del nombre de la serie para buscar.")
+    mode = context.user_data.get("mode")
+
+    if mode == "movies":
+        # Búsqueda dentro de Películas
+        await search_movies(chat, query_text, context)
         return
 
+    # ===========================
+    #  BÚSQUEDA GENERAL DE SERIES
+    # ===========================
     topics = load_topics()
     if not topics:
         await chat.send_message("📭 No hay series aún.")
         return
 
-    query_lower = query.lower()
+    # Filtrado por coincidencia parcial (case-insensitive), solo series normales
+    query_lower = query_text.lower()
     matches = [
         (tid, info)
         for tid, info in topics.items()
-        if query_lower in info.get("name", "").lower()
+        if not info.get("is_movies")
+        and query_lower in info.get("name", "").lower()
     ]
 
     if not matches:
         await chat.send_message(
-            f"🔍 No encontré ninguna serie que contenga: <b>{escape(query)}</b>",
+            f"🔍 No encontré ninguna serie que contenga:\n<b>{escape(query_text)}</b>",
             parse_mode="HTML",
         )
         return
 
+    # Orden y límite a 30 resultados
     matches = ordenar_temas(matches)
     matches = matches[:30]
 
@@ -535,18 +689,18 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     keyboard.append([
-        InlineKeyboardButton("🔙 Volver", callback_data="main_menu")
+        InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")
     ])
 
     await chat.send_message(
-        f"🔍 Resultados para: <b>{escape(query)}</b>",
+        f"🔍 Resultados de series para:\n<b>{escape(query_text)}</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 # ======================================================
-#   REENVÍO ORDENADO (SOLO FORWARD)
+#   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY) — SERIES
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -556,8 +710,11 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_id = str(topic_id)
 
     topics = load_topics()
-    if topic_id not in topics:
-        await query.edit_message_text("❌ Tema no encontrado.")
+    info = topics.get(topic_id)
+
+    # No usamos esto para el tema de Películas
+    if not info or info.get("is_movies"):
+        await query.edit_message_text("❌ Tema no encontrado o no disponible.")
         return
 
     await query.edit_message_text("📨 Enviando contenido del tema...")
@@ -565,9 +722,11 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     user_id = query.from_user.id
 
-    mensajes = [m["id"] for m in topics[topic_id]["messages"]]
+    # Mensajes en el orden en que se guardaron (cronológico)
+    mensajes = [m["id"] for m in info.get("messages", [])]
 
     enviados = 0
+
     for mid in mensajes:
         try:
             await bot.forward_message(
@@ -579,12 +738,58 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"[send_topic] ERROR reenviando {mid}: {e}")
 
+    # Mensaje final + botón VOLVER
     await bot.send_message(
         chat_id=user_id,
         text=f"✔ Envío completado. {enviados} mensajes reenviados 🎉",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
         ]),
+    )
+
+
+# ======================================================
+#   /SETPELIS — MARCAR TEMA ACTUAL COMO PELÍCULAS (SOLO OWNER)
+# ======================================================
+async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+
+    if user.id != OWNER_ID:
+        await msg.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+
+    if msg.chat.id != GROUP_ID:
+        await msg.reply_text("Usa /setpelis dentro del grupo, en el tema de Películas.")
+        return
+
+    if msg.message_thread_id is None:
+        await msg.reply_text("Debes usar /setpelis dentro del tema de Películas.")
+        return
+
+    topic_id = str(msg.message_thread_id)
+    topics = load_topics()
+
+    # Si por lo que sea no existiera aún el tema en la DB, lo creamos
+    if topic_id not in topics:
+        topic_name = f"Tema {topic_id}"
+        topics[topic_id] = {
+            "name": topic_name,
+            "messages": [],
+            "created_at": msg.date.timestamp() if msg.date else 0,
+        }
+
+    # Quitamos el flag is_movies de cualquier otro tema
+    for tid, info in topics.items():
+        if isinstance(info, dict) and info.get("is_movies"):
+            info["is_movies"] = False
+
+    topics[topic_id]["is_movies"] = True
+    save_topics(topics)
+
+    await msg.reply_text(
+        f"🎬 El tema <b>{escape(topics[topic_id]['name'])}</b> se ha establecido como tema especial de <b>Películas</b>.",
+        parse_mode="HTML",
     )
 
 
@@ -603,6 +808,7 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await chat.send_message("📭 No hay temas para borrar.")
         return
 
+    # Incluimos también el tema de películas aquí, por si quieres borrarlo
     items = ordenar_temas(list(topics.items()))
 
     keyboard = []
@@ -626,6 +832,7 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # Seguridad extra: solo OWNER
     if query.from_user.id != OWNER_ID:
         await query.edit_message_text("⛔ No tienes permiso para esta acción.")
         return
@@ -674,19 +881,22 @@ def main():
     # Comandos solo owner
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
+    app.add_handler(CommandHandler("setpelis", setpelis))
 
-    # Callbacks navegación
+    # Callbacks navegación catálogo
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:"))
     app.add_handler(CallbackQueryHandler(on_main_menu, pattern=r"^main_menu$"))
     app.add_handler(CallbackQueryHandler(on_search_btn, pattern=r"^search$"))
     app.add_handler(CallbackQueryHandler(on_recent_btn, pattern=r"^recent$"))
+    app.add_handler(CallbackQueryHandler(on_movies_btn, pattern=r"^movies$"))
 
-    # Callbacks de temas
+    # Callbacks de temas y películas
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
+    app.add_handler(CallbackQueryHandler(send_movie, pattern=r"^movie:"))
 
-    # Búsqueda por texto en privado
+    # Búsqueda por texto en privado (series / películas según modo)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
 
     # Guardar mensajes de temas (en grupo)
