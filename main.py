@@ -31,16 +31,13 @@ OWNER_ID = 5540195020
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOPICS_FILE = DATA_DIR / "topics.json"
-USERS_FILE = DATA_DIR / "users.json"  # registro de usuarios
 
-# Tamaño de página (temas por página en listados generales)
+# Tamaño de página (temas por página en listados)
 PAGE_SIZE = 30
 # Cuántos temas se muestran en "Recientes"
 RECENT_LIMIT = 20
-# Límite de resultados en búsqueda de películas (sin paginación de momento)
+# Límite de resultados en búsqueda de películas (por ahora sin paginación)
 PELIS_RESULT_LIMIT = 70
-# Tamaño de página para listado de usuarios
-USERS_PAGE_SIZE = 30
 
 
 # ======================================================
@@ -63,34 +60,46 @@ def get_first_and_base(name: str):
 
 
 # ======================================================
-#   CARGA / GUARDA TEMAS
-#   ESTRUCTURA:
+#   CARGA / GUARDA ESTRUCTURA COMPLETA
+#   Formato nuevo:
 #   {
-#       "12345": {
-#           "name": "Nombre exacto del tema",
-#           "messages": [{"id": 111}, {"id": 112}, ...],
-#           "created_at": 1700000000.0,
-#           "is_pelis": True/False,
-#           "movies": [
-#               {"id": 111, "title": "Título en descripción"},
-#           ],
-#           "muted": True/False
-#       },
-#       ...
+#       "topics": {...},
+#       "silenced": ["12345", ...],
+#       "users": {
+#           "5540195020": {...}
+#       }
 #   }
+#   También acepta formato antiguo (solo dict de topics) y migra.
 # ======================================================
-def load_topics():
+def load_all():
     if not TOPICS_FILE.exists():
-        return {}
+        return {"topics": {}, "silenced": [], "users": {}}
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # Si es el formato antiguo (dict de topics), migramos
+        if not isinstance(data, dict) or "topics" not in data:
+            data = {
+                "topics": data if isinstance(data, dict) else {},
+                "silenced": [],
+                "users": {},
+            }
+
+        # Aseguramos claves básicas
+        if "topics" not in data or not isinstance(data["topics"], dict):
+            data["topics"] = {}
+        if "silenced" not in data or not isinstance(data["silenced"], list):
+            data["silenced"] = []
+        if "users" not in data or not isinstance(data["users"], dict):
+            data["users"] = {}
+
+        # Saneamos structure de topics
         changed = False
-        for tid, info in list(data.items()):
-            # Saneamos entradas raras
-            if "name" not in info:
-                del data[tid]
+        for tid, info in list(data["topics"].items()):
+            if not isinstance(info, dict) or "name" not in info:
+                # Tema corrupto
+                del data["topics"][tid]
                 changed = True
                 continue
             if "messages" not in info:
@@ -102,23 +111,57 @@ def load_topics():
             if info.get("is_pelis") and "movies" not in info:
                 info["movies"] = []
                 changed = True
-            # muted puede no existir, no pasa nada
 
         if changed:
-            save_topics(data)
+            save_all(data)
 
         return data
     except Exception as e:
-        print("[load_topics] ERROR cargando JSON:", e)
-        return {}
+        print("[load_all] ERROR cargando JSON:", e)
+        return {"topics": {}, "silenced": [], "users": {}}
 
 
-def save_topics(data):
+def save_all(data):
     try:
+        # Normalizamos estructura mínima por si acaso
+        data.setdefault("topics", {})
+        data.setdefault("silenced", [])
+        data.setdefault("users", {})
+
         with open(TOPICS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
     except Exception as e:
-        print("[save_topics] ERROR guardando JSON:", e)
+        print("[save_all] ERROR guardando JSON:", e)
+
+
+def load_topics():
+    return load_all().get("topics", {})
+
+
+def save_topics(topics):
+    data = load_all()
+    data["topics"] = topics
+    save_all(data)
+
+
+def load_silenced():
+    return load_all().get("silenced", [])
+
+
+def save_silenced(silenced):
+    data = load_all()
+    data["silenced"] = list(silenced)
+    save_all(data)
+
+
+def load_users():
+    return load_all().get("users", {})
+
+
+def save_users(users):
+    data = load_all()
+    data["users"] = users
+    save_all(data)
 
 
 def get_pelis_topic_id(topics=None):
@@ -132,61 +175,7 @@ def get_pelis_topic_id(topics=None):
 
 
 # ======================================================
-#   CARGA / GUARDA USUARIOS (/start en privado)
-#   ESTRUCTURA:
-#   {
-#       "5540195020": {
-#           "id": 5540195020,
-#           "name": "Nombre visible",
-#           "username": "@algo" o "",
-#           "first_seen": 1700000000.0
-#       },
-#       ...
-#   }
-# ======================================================
-def load_users():
-    if not USERS_FILE.exists():
-        return {}
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print("[load_users] ERROR:", e)
-        return {}
-
-
-def save_users(data):
-    try:
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print("[save_users] ERROR:", e)
-
-
-def register_user_from_update(update: Update):
-    """Registra silenciosamente al usuario que hace /start en privado."""
-    user = update.effective_user
-    msg = update.effective_message
-    if user is None or msg is None:
-        return
-
-    users = load_users()
-    uid = str(user.id)
-    if uid not in users:
-        name = user.full_name or (user.username or f"ID {user.id}")
-        username = f"@{user.username}" if user.username else ""
-        first_seen = msg.date.timestamp() if msg.date else 0
-        users[uid] = {
-            "id": user.id,
-            "name": name,
-            "username": username,
-            "first_seen": first_seen,
-        }
-        save_users(users)
-
-
-# ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES  (NO TOCAR LÓGICA BASE)
+#   DETECTAR TEMAS Y GUARDAR MENSAJES  (RESPETA SILENCIO)
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -202,10 +191,13 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     topic_id = str(msg.message_thread_id)
-    topics = load_topics()
 
-    # Si el tema está silenciado, no registramos nada
-    if topic_id in topics and topics[topic_id].get("muted"):
+    data = load_all()
+    topics = data["topics"]
+    silenced = set(str(t) for t in data.get("silenced", []))
+
+    # Si el tema está silenciado, no escuchamos nada
+    if topic_id in silenced:
         return
 
     # Crear registro del tema si no existía
@@ -250,7 +242,8 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"id": msg.message_id, "title": title}
             )
 
-    save_topics(topics)
+    data["topics"] = topics
+    save_all(data)
 
 
 # ======================================================
@@ -287,12 +280,10 @@ def ordenar_temas(items):
             return (0, base_key, 0, nombre.lower())
 
         # Letras A-Z
-        # Caso especial Ñ: la tratamos como N pero detrás
         if upper_first == "Ñ":
             base_key = "N"
             accent_rank = 2
         else:
-            # Acentuadas si difiere de la base (ej: Á vs A)
             accent_rank = 0 if upper_first != base_key else 1
 
         return (1, base_key, accent_rank, nombre.lower())
@@ -379,16 +370,29 @@ async def show_main_menu(chat, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /START y /TEMAS → MENÚ PRINCIPAL
+#   /START y /TEMAS → MENÚ PRINCIPAL + registro de usuario
 # ======================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if chat.type == "private":
-        # Registramos usuario silenciosamente
-        register_user_from_update(update)
-        await show_main_menu(chat, context)
-    else:
+    user = update.effective_user
+
+    # Registrar usuario si está en privado
+    if user is not None and chat.type == "private":
+        data = load_all()
+        users = data.get("users", {})
+        users[str(user.id)] = {
+            "id": user.id,
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "username": user.username or "",
+        }
+        data["users"] = users
+        save_all(data)
+
+    if chat.type != "private":
         await update.message.reply_text("Entra en privado conmigo para ver el catálogo 😊")
+        return
+    await show_main_menu(chat, context)
 
 
 async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,7 +404,7 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   HANDLER: letra pulsada → lista paginada
+#   HANDLER: letra pulsada → lista paginada (para ver series)
 # ======================================================
 def build_letter_page(letter, page, topics_dict):
     filtrados = filtrar_por_letra(topics_dict, letter)
@@ -827,17 +831,20 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /SETPELIS — marcar tema actual como Películas (one-shot, solo OWNER)
+#   /SETPELIS — marcar tema actual como Películas (one-shot)
 # ======================================================
 async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
+    # Solo owner
     if update.effective_user.id != OWNER_ID:
         await msg.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
+    topics_all = load_all()
+    topics = topics_all["topics"]
+
     # Si ya hay un tema de pelis, no dejamos cambiarlo (comando de un solo uso)
-    topics = load_topics()
     existing_pelis_tid = get_pelis_topic_id(topics)
     if existing_pelis_tid:
         await msg.reply_text(
@@ -869,7 +876,8 @@ async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics[topic_id]["is_pelis"] = True
     topics[topic_id].setdefault("movies", [])
 
-    save_topics(topics)
+    topics_all["topics"] = topics
+    save_all(topics_all)
 
     await msg.reply_text(
         "🍿 Este tema ha sido configurado como <b>Películas</b>.\n"
@@ -879,14 +887,16 @@ async def setpelis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /SILENCIO y /ACTIVAR — solo OWNER, por tema
+#   /SILENCIO y /ACTIVAR — SOLO OWNER
 # ======================================================
 async def silencio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+
     if update.effective_user.id != OWNER_ID:
         await msg.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
+    # Debe ejecutarse dentro del grupo y dentro de un tema
     if msg.chat.id != GROUP_ID or msg.message_thread_id is None:
         await msg.reply_text(
             "🔇 Usa /silencio dentro del tema que quieras silenciar en el grupo.",
@@ -895,63 +905,70 @@ async def silencio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     topic_id = str(msg.message_thread_id)
-    topics = load_topics()
 
-    if topic_id not in topics:
-        # Creamos entrada mínima para poder marcarlo como silenciado
-        topic_name = msg.chat.title or f"Tema {topic_id}"
-        topics[topic_id] = {
-            "name": topic_name,
-            "messages": [],
-            "created_at": msg.date.timestamp() if msg.date else 0,
-        }
+    data = load_all()
+    topics = data["topics"]
+    silenced = set(str(t) for t in data.get("silenced", []))
 
-    topics[topic_id]["muted"] = True
-    save_topics(topics)
+    if topic_id in silenced:
+        await msg.reply_text("🔇 Este tema ya estaba silenciado.")
+        return
+
+    silenced.add(topic_id)
+    data["silenced"] = list(silenced)
+
+    # Lo quitamos de la lista de temas para que no aparezca como serie
+    if topic_id in topics:
+        del topics[topic_id]
+    data["topics"] = topics
+
+    save_all(data)
 
     await msg.reply_text(
-        "🔇 Este tema ha sido <b>silenciado</b>.\n"
-        "El bot ya no registrará nada aquí.",
+        "🔇 Este tema ha sido silenciado.\n"
+        "El bot ya no guardará nada aquí ni lo mostrará en el catálogo.",
         parse_mode="HTML",
     )
 
 
 async def activar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+
     if update.effective_user.id != OWNER_ID:
         await msg.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
     if msg.chat.id != GROUP_ID or msg.message_thread_id is None:
         await msg.reply_text(
-            "🔊 Usa /activar dentro del tema que quieras reactivar en el grupo.",
+            "🔊 Usa /activar dentro del tema que quieras volver a activar.",
             parse_mode="HTML",
         )
         return
 
     topic_id = str(msg.message_thread_id)
-    topics = load_topics()
 
-    if topic_id in topics and topics[topic_id].get("muted"):
-        topics[topic_id]["muted"] = False
-        save_topics(topics)
-        await msg.reply_text(
-            "🔊 Este tema ha sido <b>reactivado</b>.\n"
-            "El bot volverá a registrar mensajes aquí.",
-            parse_mode="HTML",
-        )
-    else:
-        await msg.reply_text(
-            "ℹ️ Este tema no estaba silenciado.",
-            parse_mode="HTML",
-        )
+    data = load_all()
+    silenced = set(str(t) for t in data.get("silenced", []))
+
+    if topic_id not in silenced:
+        await msg.reply_text("ℹ️ Este tema no estaba silenciado.")
+        return
+
+    silenced.remove(topic_id)
+    data["silenced"] = list(silenced)
+    save_all(data)
+
+    await msg.reply_text(
+        "🔊 Este tema ha sido reactivado.\n"
+        "El bot volverá a escuchar y registrar mensajes aquí.",
+        parse_mode="HTML",
+    )
 
 
 # ======================================================
-#   /BORRARTEMA  — SOLO OWNER, con abecedario + paginación
+#   /BORRARTEMA — SOLO OWNER, con abecedario + paginación
 # ======================================================
-def build_borrartema_main_keyboard():
-    """Teclado de letras para modo borrado de temas."""
+def build_borrartema_letter_keyboard():
     rows = []
     letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -968,9 +985,9 @@ def build_borrartema_main_keyboard():
         [InlineKeyboardButton("#", callback_data="del_letter:#")]
     )
 
-    # Fila volver al catálogo general
+    # Fila volver al menú principal
     rows.append(
-        [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
+        [InlineKeyboardButton("🔙 Cancelar", callback_data="main_menu")]
     )
 
     return InlineKeyboardMarkup(rows)
@@ -990,19 +1007,21 @@ async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await chat.send_message(
         "🗑 <b>Borrar temas</b>\n"
-        "Elige una letra para ver los temas que comienzan por esa letra.",
+        "Elige la letra por la que empieza el tema que quieres borrar.",
         parse_mode="HTML",
-        reply_markup=build_borrartema_main_keyboard(),
+        reply_markup=build_borrartema_letter_keyboard(),
     )
 
 
-def build_borrartema_letter_page(letter, page, topics_dict):
+def build_delete_page(letter, page, topics_dict):
     filtrados = filtrar_por_letra(topics_dict, letter)
     total = len(filtrados)
     if total == 0:
         return (
             f"📭 No hay temas que empiecen por <b>{escape(letter)}</b>.",
-            build_borrartema_main_keyboard(),
+            InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 Volver", callback_data="del_main_menu")]]
+            ),
         )
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
@@ -1016,10 +1035,9 @@ def build_borrartema_letter_page(letter, page, topics_dict):
     for tid, info in slice_items:
         safe_name = escape(info.get("name", ""))
         keyboard.append(
-            [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
+            [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del_topic:{tid}")]
         )
 
-    # Navegación
     nav_row = []
     if total_pages > 1:
         if page > 1:
@@ -1040,47 +1058,31 @@ def build_borrartema_letter_page(letter, page, topics_dict):
     if nav_row:
         keyboard.append(nav_row)
 
-    # Volver a selector de letras
     keyboard.append(
-        [InlineKeyboardButton("🔤 Elegir otra letra", callback_data="del_main")]
-    )
-    # Volver al catálogo general
-    keyboard.append(
-        [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
+        [InlineKeyboardButton("🔙 Volver", callback_data="del_main_menu")]
     )
 
     if letter == "#":
-        title = "🗑 <b>Temas que empiezan por número o símbolo</b>"
+        title = "🗑 <b>Temas por número o símbolo</b>"
     else:
         title = f"🗑 <b>Temas que empiezan por “{escape(letter)}”</b>"
 
     text = f"{title}\nMostrando {len(slice_items)} de {total}."
-
     return text, InlineKeyboardMarkup(keyboard)
-
-
-async def on_del_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Vuelve al selector de letras de /borrartema."""
-    query = update.callback_query
-    await query.answer()
-    try:
-        await query.edit_message_text(
-            "🗑 <b>Borrar temas</b>\n"
-            "Elige una letra para ver los temas que comienzan por esa letra.",
-            parse_mode="HTML",
-            reply_markup=build_borrartema_main_keyboard(),
-        )
-    except Exception as e:
-        print("[on_del_main] Error editando mensaje:", e)
 
 
 async def on_del_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("⛔ No tienes permiso para esta acción.")
+        return
+
     _, letter = query.data.split(":", 1)
     topics = load_topics()
 
-    text, markup = build_borrartema_letter_page(letter, 1, topics)
+    text, markup = build_delete_page(letter, 1, topics)
     try:
         await query.edit_message_text(
             text=text,
@@ -1094,11 +1096,17 @@ async def on_del_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("⛔ No tienes permiso para esta acción.")
+        return
+
     _, letter, page_str = query.data.split(":", 2)
     page = int(page_str)
-    topics = load_topics()
 
-    text, markup = build_borrartema_letter_page(letter, page, topics)
+    topics = load_topics()
+    text, markup = build_delete_page(letter, page, topics)
+
     try:
         await query.edit_message_text(
             text=text,
@@ -1109,9 +1117,26 @@ async def on_del_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print("[on_del_page] Error editando mensaje:", e)
 
 
-# ======================================================
-#   CALLBACK → eliminar tema (solo OWNER)
-# ======================================================
+async def on_del_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Volver al selector de letras dentro del modo borrartema."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != OWNER_ID:
+        await query.edit_message_text("⛔ No tienes permiso para esta acción.")
+        return
+
+    try:
+        await query.edit_message_text(
+            "🗑 <b>Borrar temas</b>\n"
+            "Elige la letra por la que empieza el tema que quieres borrar.",
+            parse_mode="HTML",
+            reply_markup=build_borrartema_letter_keyboard(),
+        )
+    except Exception as e:
+        print("[on_del_main_menu] Error editando mensaje:", e)
+
+
 async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1124,7 +1149,9 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, topic_id = query.data.split(":", 1)
     topic_id = str(topic_id)
 
-    topics = load_topics()
+    data = load_all()
+    topics = data["topics"]
+
     if topic_id not in topics:
         await query.edit_message_text("❌ Ese tema ya no existe.")
         return
@@ -1132,7 +1159,8 @@ async def delete_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deleted_name = topics[topic_id]["name"]
 
     del topics[topic_id]
-    save_topics(topics)
+    data["topics"] = topics
+    save_all(data)
 
     await query.edit_message_text(
         f"🗑 Tema eliminado:\n<b>{escape(deleted_name)}</b>",
@@ -1148,113 +1176,47 @@ async def reiniciar_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
-    save_topics({})
+    # Borra todo: topics, silenced, users
+    save_all({"topics": {}, "silenced": [], "users": {}})
     await update.message.reply_text("🗑 Base de datos reiniciada.")
 
 
 # ======================================================
-#   /USUARIOS — SOLO OWNER (listado paginado)
+#   /USUARIOS — SOLO OWNER, ver registro
 # ======================================================
-def build_users_page(page: int, users_dict: dict):
-    items = list(users_dict.items())
-    if not items:
-        text = "👥 No hay usuarios registrados todavía."
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]]
-        )
-        return text, markup
-
-    # Ordenamos por first_seen ascendente
-    def clave(u_item):
-        uid, info = u_item
-        return info.get("first_seen", 0)
-
-    items.sort(key=clave)
-
-    total = len(items)
-    total_pages = max(1, math.ceil(total / USERS_PAGE_SIZE))
-    page = max(1, min(page, total_pages))
-
-    start_idx = (page - 1) * USERS_PAGE_SIZE
-    end_idx = start_idx + USERS_PAGE_SIZE
-    slice_items = items[start_idx:end_idx]
-
-    lines = [f"👥 <b>Usuarios registrados</b> (total: {total})\n"]
-    for idx, (uid, info) in enumerate(slice_items, start=start_idx + 1):
-        name = info.get("name", "")
-        username = info.get("username", "")
-        if username:
-            line = f"{idx}. {escape(name)} ({escape(username)})"
-        else:
-            line = f"{idx}. {escape(name)}"
-        lines.append(line)
-
-    text = "\n".join(lines)
-
-    keyboard = []
-    nav_row = []
-    if total_pages > 1:
-        if page > 1:
-            nav_row.append(
-                InlineKeyboardButton(
-                    "⬅️ Anterior", callback_data=f"users_page:{page-1}"
-                )
-            )
-        nav_row.append(
-            InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop")
-        )
-        if page < total_pages:
-            nav_row.append(
-                InlineKeyboardButton(
-                    "Siguiente ➡️", callback_data=f"users_page:{page+1}"
-                )
-            )
-    if nav_row:
-        keyboard.append(nav_row)
-
-    keyboard.append(
-        [InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]
-    )
-
-    return text, InlineKeyboardMarkup(keyboard)
-
-
 async def usuarios(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
     users = load_users()
-    text, markup = build_users_page(1, users)
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=markup,
-    )
-
-
-async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != OWNER_ID:
-        await query.edit_message_text("⛔ No tienes permiso para esta acción.")
+    if not users:
+        await update.message.reply_text("📭 No hay usuarios registrados todavía.")
         return
 
-    _, page_str = query.data.split(":", 1)
-    page = int(page_str)
+    # Ordenamos por nombre, luego por id
+    items = list(users.items())
 
-    users = load_users()
-    text, markup = build_users_page(page, users)
+    def user_key(item):
+        uid, info = item
+        name = (info.get("first_name") or "") + " " + (info.get("last_name") or "")
+        return (name.strip().lower(), int(uid))
 
-    try:
-        await query.edit_message_text(
-            text=text,
-            parse_mode="HTML",
-            reply_markup=markup,
-        )
-    except Exception as e:
-        print("[on_users_page] Error editando mensaje:", e)
+    items.sort(key=user_key)
+
+    lines = []
+    for uid, info in items:
+        name = (info.get("first_name") or "") + " " + (info.get("last_name") or "")
+        name = name.strip() or "(sin nombre)"
+        username = info.get("username")
+        if username:
+            line = f"- {escape(name)} (@{escape(username)}) — <code>{uid}</code>"
+        else:
+            line = f"- {escape(name)} — <code>{uid}</code>"
+        lines.append(line)
+
+    text = "👥 <b>Usuarios registrados</b>\n" + "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ======================================================
@@ -1283,16 +1245,15 @@ def main():
     app.add_handler(CallbackQueryHandler(on_recent_btn, pattern=r"^recent$"))
     app.add_handler(CallbackQueryHandler(on_pelis_btn, pattern=r"^pelis$"))
 
-    # Callbacks borrado temas (por letra / página)
-    app.add_handler(CallbackQueryHandler(on_del_main, pattern=r"^del_main$"))
+    # Callbacks borrartema (owner)
     app.add_handler(CallbackQueryHandler(on_del_letter, pattern=r"^del_letter:"))
     app.add_handler(CallbackQueryHandler(on_del_page, pattern=r"^del_page:"))
+    app.add_handler(CallbackQueryHandler(on_del_main_menu, pattern=r"^del_main_menu$"))
+    app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del_topic:"))
 
-    # Callbacks de temas / películas / usuarios
+    # Callbacks de temas / películas
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
-    app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
-    app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^users_page:"))
 
     # Búsqueda por texto en privado (series o pelis según modo)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
