@@ -8,7 +8,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputFile,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,11 +27,8 @@ GROUP_ID = int(os.getenv("GROUP_ID"))
 # ID DEL OWNER — PERMISOS ESPECIALES
 OWNER_ID = 5540195020
 
-# ID(s) de temas que queremos ignorar siempre (por ejemplo #general)
-IGNORED_TOPICS = {"23880"}  # <- aquí el tema #general
-
 # Carpeta persistente de Railway
-DATA_DIR = Path("/data")
+DATA_DIR = Path("/data")  # <-- ESTA ES LA RUTA QUE VAMOS A VERIFICAR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOPICS_FILE = DATA_DIR / "topics.json"
 
@@ -44,6 +40,20 @@ RECENT_LIMIT = 20
 # Películas: paginación y búsquedas
 PELIS_PAGE_SIZE = 50
 PELIS_MAX_RESULTS = 500
+
+
+# ======================================================
+#   /WHERE — comando diagnóstico
+# ======================================================
+async def where(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra la ruta real del archivo de base de datos."""
+    text = (
+        f"📁 <b>Ruta actual de topics.json</b>\n\n"
+        f"<b>DATA_DIR:</b>\n{DATA_DIR}\n"
+        f"<b>TOPICS_FILE:</b>\n{TOPICS_FILE}\n\n"
+        f"<b>¿Existe?:</b> {TOPICS_FILE.exists()}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ======================================================
@@ -71,21 +81,12 @@ def load_topics():
     try:
         with open(TOPICS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception as e:
-        print("[load_topics] ERROR cargando JSON:", e)
+    except:
         return {}
 
     changed = False
     for tid, info in list(data.items()):
-        # Si no es un dict, lo eliminamos
-        if not isinstance(info, dict):
-            print(f"[load_topics] Entrada no dict para tid={tid}, eliminando.")
-            del data[tid]
-            changed = True
-            continue
-
         if "name" not in info:
-            print(f"[load_topics] Entrada sin 'name' para tid={tid}, eliminando.")
             del data[tid]
             changed = True
             continue
@@ -102,11 +103,8 @@ def load_topics():
 
 
 def save_topics(data):
-    try:
-        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print("[save_topics] ERROR guardando JSON:", e)
+    with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 def get_pelis_topic_id(topics=None):
@@ -119,29 +117,6 @@ def get_pelis_topic_id(topics=None):
 
 
 # ======================================================
-#   /DUMPJSON — ver el JSON (solo OWNER)
-# ======================================================
-async def dumpjson(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso.")
-        return
-
-    if not TOPICS_FILE.exists():
-        await update.message.reply_text("No existe topics.json todavía.")
-        return
-
-    try:
-        with open(TOPICS_FILE, "rb") as f:
-            await context.bot.send_document(
-                chat_id=update.effective_user.id,
-                document=InputFile(f, filename="topics.json"),
-                caption="Aquí tienes el topics.json actual.",
-            )
-    except Exception as e:
-        await update.message.reply_text(f"Error enviando topics.json: {e}")
-
-
-# ======================================================
 #   DETECTAR TEMAS Y GUARDAR MENSAJES
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -149,21 +124,13 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # Solo el grupo configurado
     if msg.chat.id != GROUP_ID:
         return
 
-    # Solo mensajes dentro de un tema
     if msg.message_thread_id is None:
         return
 
     topic_id = str(msg.message_thread_id)
-
-    # Ignorar temas marcados como silenciados, como #general
-    if topic_id in IGNORED_TOPICS:
-        # Simplemente no registramos nada de este hilo
-        return
-
     topics = load_topics()
 
     # Crear nuevo tema
@@ -184,8 +151,8 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
                 parse_mode="HTML",
             )
-        except Exception as e:
-            print("[detect] Error avisando tema nuevo:", e)
+        except:
+            pass
 
     # Asegurar estructura del tema
     topic = topics[topic_id]
@@ -210,14 +177,6 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   ORDENAR TEMAS
 # ======================================================
 def ordenar_temas(items):
-    """
-    Orden alfabético correcto con acentos:
-    - grupo 0 → símbolos y números
-    - grupo 1 → letras A-Z
-      - dentro: Á antes que A
-      - Ñ después de N
-    """
-
     def clave(item):
         _tid, info = item
         n = info["name"].strip()
@@ -333,7 +292,7 @@ def build_letter_page(letter, page, topics):
 
     if total == 0:
         return (
-            f"📭 No hay series que empiecen por <b>{escape(letter)}</b>.",
+            f"📭 No hay series que empiecen por <b>{letter}</b>.",
             InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
         )
 
@@ -359,13 +318,12 @@ def build_letter_page(letter, page, topics):
     keyboard.append(nav)
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
-    title = f"🎬 <b>Series que empiezan por “{escape(letter)}”</b>"
+    title = f"🎬 <b>Series que empiezan por “{letter}”</b>"
     return f"{title}\nMostrando {len(subset)} de {total}.", InlineKeyboardMarkup(keyboard)
 
 
 async def on_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
     _, l = q.data.split(":")
     text, markup = build_letter_page(l, 1, load_topics())
     await q.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
@@ -373,7 +331,6 @@ async def on_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
     _, letter, p = q.data.split(":")
     p = int(p)
     text, markup = build_letter_page(letter, p, load_topics())
@@ -385,7 +342,6 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 async def on_main_menu(update, context):
     q = update.callback_query
-    await q.answer()
     await q.edit_message_text(
         "🎬 <b>Catálogo de series</b>",
         parse_mode="HTML",
@@ -396,7 +352,6 @@ async def on_main_menu(update, context):
 
 async def on_recent_btn(update, context):
     q = update.callback_query
-    await q.answer()
     items = list(load_topics().items())
     items.sort(key=lambda x: x[1]["created_at"], reverse=True)
     items = items[:RECENT_LIMIT]
@@ -413,7 +368,6 @@ async def on_recent_btn(update, context):
 
 async def on_search_btn(update, context):
     q = update.callback_query
-    await q.answer()
     context.user_data["search_mode"] = "series"
     await q.edit_message_text(
         "🔍 Escribe parte del nombre de la serie.",
@@ -424,7 +378,6 @@ async def on_search_btn(update, context):
 
 async def on_pelis_btn(update, context):
     q = update.callback_query
-    await q.answer()
     context.user_data["search_mode"] = "pelis"
     await q.edit_message_text(
         "🍿 Escribe parte del título de la película.",
@@ -555,7 +508,6 @@ async def search_text(update, context):
 # ======================================================
 async def on_pelis_page(update, context):
     q = update.callback_query
-    await q.answer()
     _, p = q.data.split(":")
     page = int(p)
 
@@ -571,7 +523,6 @@ async def on_pelis_page(update, context):
 # ======================================================
 async def send_topic(update, context):
     q = update.callback_query
-    await q.answer()
     _, tid = q.data.split(":")
     tid = str(tid)
 
@@ -585,11 +536,11 @@ async def send_topic(update, context):
     bot = context.bot
     uid = q.from_user.id
 
-    for m in topics[tid]["messages"][:]:
+    for m in topics[tid]["messages"]:
         try:
             await bot.forward_message(chat_id=uid, from_chat_id=GROUP_ID, message_id=m["id"])
-        except Exception as e:
-            print(f"[send_topic] Error reenviando {m['id']}: {e}")
+        except:
+            pass
 
     await bot.send_message(
         uid,
@@ -603,7 +554,6 @@ async def send_topic(update, context):
 # ======================================================
 async def send_peli_message(update, context):
     q = update.callback_query
-    await q.answer()
     _, tid, mid = q.data.split(":")
     mid = int(mid)
 
@@ -616,8 +566,7 @@ async def send_peli_message(update, context):
             uid, "🍿 Película enviada.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
         )
-    except Exception as e:
-        print(f"[send_peli_message] Error reenviando peli {mid}: {e}")
+    except:
         await q.answer("No se pudo reenviar.", show_alert=True)
 
 
@@ -677,7 +626,6 @@ async def borrartema(update, context):
 
 async def delete_topic(update, context):
     q = update.callback_query
-    await q.answer()
     if q.from_user.id != OWNER_ID:
         await q.edit_message_text("⛔ No permitido.")
         return
@@ -737,7 +685,6 @@ async def borrarpeli(update, context):
 
 async def delete_peli(update, context):
     q = update.callback_query
-    await q.answer()
     if q.from_user.id != OWNER_ID:
         await q.edit_message_text("⛔ No permitido.")
         return
@@ -767,15 +714,13 @@ def main():
 
     # Comandos
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("where", where))  # <--- AÑADIDO AQUÍ
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CommandHandler("setpelis", setpelis))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("borrarpeli", borrarpeli))
-    app.add_handler(CommandHandler("dumpjson", dumpjson))
-    app.add_handler(CommandHandler(
-        "reiniciar_db",
-        lambda u, c: (save_topics({}), u.message.reply_text("DB reiniciada."))
-    ))
+    app.add_handler(CommandHandler("reiniciar_db",
+                                   lambda u, c: save_topics({}) or u.message.reply_text("DB reiniciada.")))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
