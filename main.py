@@ -28,7 +28,7 @@ GROUP_ID = int(os.getenv("GROUP_ID"))
 OWNER_ID = 5540195020
 
 # Carpeta persistente de Railway
-DATA_DIR = Path("/data")  # <-- ESTA ES LA RUTA QUE VAMOS A VERIFICAR
+DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOPICS_FILE = DATA_DIR / "topics.json"
 
@@ -40,20 +40,6 @@ RECENT_LIMIT = 20
 # Películas: paginación y búsquedas
 PELIS_PAGE_SIZE = 50
 PELIS_MAX_RESULTS = 500
-
-
-# ======================================================
-#   /WHERE — comando diagnóstico
-# ======================================================
-async def where(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra la ruta real del archivo de base de datos."""
-    text = (
-        f"📁 <b>Ruta actual de topics.json</b>\n\n"
-        f"<b>DATA_DIR:</b>\n{DATA_DIR}\n"
-        f"<b>TOPICS_FILE:</b>\n{TOPICS_FILE}\n\n"
-        f"<b>¿Existe?:</b> {TOPICS_FILE.exists()}"
-    )
-    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ======================================================
@@ -118,6 +104,7 @@ def get_pelis_topic_id(topics=None):
 
 # ======================================================
 #   DETECTAR TEMAS Y GUARDAR MENSAJES
+#   (AQUÍ HEMOS MEJORADO EL NOMBRE EXACTO DEL TEMA)
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -135,9 +122,26 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Crear nuevo tema
     if topic_id not in topics:
+        topic_name = None
+
+        # 1) Si el mensaje es el de creación del tema, usamos ese nombre
         if msg.forum_topic_created:
-            topic_name = msg.forum_topic_created.name or f"Tema {topic_id}"
-        else:
+            topic_name = msg.forum_topic_created.name or None
+
+        # 2) Si no, intentamos pedirle a Telegram el nombre real del tema
+        if not topic_name:
+            try:
+                forum_topic = await context.bot.get_forum_topic(
+                    chat_id=msg.chat.id,
+                    message_thread_id=msg.message_thread_id,
+                )
+                if forum_topic and getattr(forum_topic, "name", None):
+                    topic_name = forum_topic.name
+            except Exception as e:
+                print("[detect] Error get_forum_topic:", e)
+
+        # 3) Fallback por si todo falla
+        if not topic_name:
             topic_name = f"Tema {topic_id}"
 
         topics[topic_id] = {
@@ -177,6 +181,14 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   ORDENAR TEMAS
 # ======================================================
 def ordenar_temas(items):
+    """
+    Orden alfabético correcto con acentos:
+    - grupo 0 → símbolos y números
+    - grupo 1 → letras A-Z
+      - dentro: Á antes que A
+      - Ñ después de N
+    """
+
     def clave(item):
         _tid, info = item
         n = info["name"].strip()
@@ -714,13 +726,16 @@ def main():
 
     # Comandos
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("where", where))  # <--- AÑADIDO AQUÍ
     app.add_handler(CommandHandler("temas", temas))
     app.add_handler(CommandHandler("setpelis", setpelis))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("borrarpeli", borrarpeli))
-    app.add_handler(CommandHandler("reiniciar_db",
-                                   lambda u, c: save_topics({}) or u.message.reply_text("DB reiniciada.")))
+    app.add_handler(
+        CommandHandler(
+            "reiniciar_db",
+            lambda u, c: save_topics({}) or u.message.reply_text("DB reiniciada.")
+        )
+    )
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
