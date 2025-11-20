@@ -126,6 +126,8 @@ def get_pelis_topic_id(topics=None):
     if topics is None:
         topics = load_topics()
     for tid, info in topics.items():
+            if info.get("hidden"):
+                continue
         if info.get("hidden"):
             continue
         if info.get("is_pelis"):
@@ -312,6 +314,8 @@ def filtrar_por_letra(topics, letter):
     filtrados = []
 
     for tid, info in topics.items():
+        if info.get("hidden"):
+            continue
         nombre = info.get("name", "")
         nombre_strip = nombre.strip()
         if not nombre_strip:
@@ -660,10 +664,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         q = query_text.lower()
-        matches = [
-            (tid, info)
-            for tid, info in topics.items()
-            if not info.get("hidden") and]
+        matches = []
         seen_ids = set()
 
         for m in movies:
@@ -1011,12 +1012,10 @@ def build_borrartema_main_keyboard():
 async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
 
-    # Solo OWNER
     if update.effective_user.id != OWNER_ID:
         await msg.reply_text("⛔ No tienes permiso para usar este comando.")
         return
 
-    # Solo en privado
     if msg.chat.type != "private":
         await msg.reply_text("ℹ️ Este comando solo funciona en privado.")
         return
@@ -1028,7 +1027,6 @@ async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nombre_buscado = " ".join(context.args).lower()
     topics = load_topics()
 
-    # Buscar coincidencias
     coincidencias = [
         (tid, info) for tid, info in topics.items()
         if nombre_buscado in info.get("name", "").lower()
@@ -1040,19 +1038,14 @@ async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(coincidencias) > 1:
         lista = "\n".join("• " + c[1]["name"] for c in coincidencias)
-        await msg.reply_text(
-            "⚠️ Hay varias coincidencias, sé más específico:\n" + lista
-        )
+        await msg.reply_text("⚠️ Hay varias coincidencias, sé más específico:\n" + lista)
+        return
 
     tid, info = coincidencias[0]
     info["hidden"] = True
     save_topics(topics)
 
-    await msg.reply_text(
-        f"✔ Tema ocultado:
-<b>{escape(info['name'])}</b>",
-        parse_mode="HTML",
-    )
+    await msg.reply_text(f"✔ Tema ocultado:\n<b>{escape(info['name'])}</b>", parse_mode="HTML")
 
 
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
