@@ -125,7 +125,7 @@ def get_pelis_topic_id(topics=None):
     """Busca el tema marcado como películas."""
     if topics is None:
         topics = load_topics()
-    for tid, info in topics.items():
+    for tid, info in topics.items() if not info.get('is_pelis'):
         if info.get("is_pelis"):
             return tid
     return None
@@ -309,7 +309,9 @@ def filtrar_por_letra(topics, letter):
     letter = letter.upper()
     filtrados = []
 
-    for tid, info in topics.items():
+    for tid, info in topics.items() if not info.get('is_pelis'):
+        if info.get("is_pelis"):
+            continue
         nombre = info.get("name", "")
         nombre_strip = nombre.strip()
         if not nombre_strip:
@@ -565,7 +567,7 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Ordenamos por created_at descendente
-    items = list(topics.items())
+    items = [(tid,info) for tid,info in topics.items() if not info.get('is_pelis')]
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
     items = items[:RECENT_LIMIT]
 
@@ -712,7 +714,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_lower = query_text.lower()
         matches = [
             (tid, info)
-            for tid, info in topics.items()
+            for tid, info in topics.items() if not info.get('is_pelis')
             if query_lower in info.get("name", "").lower()
         ]
 
@@ -1335,8 +1337,8 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
-    app.add_handler(CommandHandler("exportar", exportar))
-    app.add_handler(CommandHandler("importar", importar))
+    app.add_handler(CommandHandler(\"exportar\", exportar))
+    app.add_handler(CommandHandler(\"importar\", importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
