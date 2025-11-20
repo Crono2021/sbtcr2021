@@ -1331,8 +1331,8 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
-    app.add_handler(CommandHandler(\"exportar\", exportar))
-    app.add_handler(CommandHandler(\"importar\", importar))
+    app.add_handler(CommandHandler("exportar", exportar))
+    app.add_handler(CommandHandler("importar", importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
