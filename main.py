@@ -2,6 +2,7 @@ import os
 import json
 import math
 import unicodedata
+import asyncio
 from pathlib import Path
 from html import escape
 from telegram import (
@@ -17,6 +18,7 @@ from telegram.ext import (
     CommandHandler,
     filters,
 )
+from telegram.error import RetryAfter, BadRequest
 
 # ======================================================
 #   CONFIGURACIÓN DEL BOT
@@ -748,6 +750,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
+#   (FUNCIÓN PARCHEADA PARA SOPORTAR >200 MENSAJES)
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -767,20 +770,36 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
-    # El orden ya es cronológico por cómo se van registrando
 
     enviados = 0
 
     for mid in mensajes:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=mid,
-            )
-            enviados += 1
-        except Exception as e:
-            print(f"[send_topic] ERROR reenviando {mid}: {e}")
+        while True:
+            try:
+                await bot.forward_message(
+                    chat_id=user_id,
+                    from_chat_id=GROUP_ID,
+                    message_id=mid,
+                )
+                enviados += 1
+
+                # Pausa mínima anti-flood
+                await asyncio.sleep(0.12)
+                break
+
+            except RetryAfter as e:
+                wait_time = int(e.retry_after) + 1
+                print(f"[send_topic] Flood control — esperando {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+            except BadRequest as e:
+                # Mensaje borrado / no disponible, lo saltamos
+                print(f"[send_topic] BadRequest reenviando {mid}: {e}")
+                break
+
+            except Exception as e:
+                print(f"[send_topic] ERROR inesperado reenviando {mid}: {e}")
+                break
 
     await bot.send_message(
         chat_id=user_id,
