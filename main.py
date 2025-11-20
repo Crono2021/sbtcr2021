@@ -749,6 +749,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
 # ======================================================
+
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -763,24 +764,49 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("📨 Enviando contenido del tema...")
 
+    import asyncio
+    from telegram.error import RetryAfter, BadRequest
+
     bot = context.bot
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
-    # El orden ya es cronológico por cómo se van registrando
-
     enviados = 0
 
+    delay = 0.12
+    ruptura = 150
+    pausa_larga = 1.5
+
     for mid in mensajes:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=mid,
-            )
-            enviados += 1
-        except Exception as e:
-            print(f"[send_topic] ERROR reenviando {mid}: {e}")
+        while True:
+            try:
+                await bot.forward_message(
+                    chat_id=user_id,
+                    from_chat_id=GROUP_ID,
+                    message_id=mid,
+                )
+                enviados += 1
+                await asyncio.sleep(delay)
+
+                if enviados % ruptura == 0:
+                    try:
+                        fantasma = await bot.send_message(chat_id=user_id, text="‎")
+                        await asyncio.sleep(pausa_larga)
+                        try:
+                            await fantasma.delete()
+                        except:
+                            pass
+                    except:
+                        pass
+
+                break
+
+            except RetryAfter as e:
+                await asyncio.sleep(int(e.retry_after)+1)
+            except BadRequest:
+                break
+            except Exception:
+                break
 
     await bot.send_message(
         chat_id=user_id,
@@ -791,9 +817,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ======================================================
-#   CALLBACK → enviar UNA película concreta
-# ======================================================
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
