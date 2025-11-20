@@ -1260,57 +1260,6 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   MAIN
 # ======================================================
-
-async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-    if not TOPICS_FILE.exists():
-        await update.message.reply_text("❌ No existe topics.json en la base de datos.")
-        return
-    try:
-        await update.message.reply_document(
-            document=open(TOPICS_FILE, "rb"),
-            filename="topics.json",
-            caption="📦 Exportación de topics.json completada."
-        )
-    except Exception as e:
-        print("[exportar] ERROR:", e)
-        await update.message.reply_text("❌ Error al enviar topics.json.")
-
-
-async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-    msg = update.message
-    if not msg.reply_to_message or not msg.reply_to_message.document:
-        await msg.reply_text(
-            "❌ Debes responder al archivo topics.json con el comando /importar.
-"
-            "Ejemplo:
-1️⃣ Me envías el archivo
-2️⃣ Respondes al archivo con: /importar"
-        )
-        return
-    doc = msg.reply_to_message.document
-    if doc.file_name != "topics.json":
-        await msg.reply_text("❌ El archivo debe llamarse exactamente: topics.json")
-        return
-    try:
-        file = await doc.get_file()
-        temp_path = "/tmp/topics.json"
-        await file.download_to_drive(temp_path)
-        with open(temp_path, "r", encoding="utf-8") as f:
-            new_topics = json.load(f)
-        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-            json.dump(new_topics, f, indent=4, ensure_ascii=False)
-        await msg.reply_text("✔ Base de datos importada correctamente (topics.json reemplazado).")
-    except Exception as e:
-        print("[importar] ERROR:", e)
-        await msg.reply_text("❌ Hubo un error importando el archivo.")
-
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1325,8 +1274,6 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
-    app.add_handler(CommandHandler("exportar", exportar))
-    app.add_handler(CommandHandler("importar", importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
