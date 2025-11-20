@@ -770,35 +770,33 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
     enviados = 0
 
-    delay_normal = 0.25
-    pausa_mas_larga = 2
-    cada_cuantos = 70
+    delay = 0.15
+    ruptura = 150
+    pausa_larga = 2
 
     for mid in mensajes:
         while True:
             try:
-                await bot.copy_message(
+                await bot.forward_message(
                     chat_id=user_id,
                     from_chat_id=GROUP_ID,
                     message_id=mid,
                 )
-
                 enviados += 1
+                await asyncio.sleep(delay)
 
-                await asyncio.sleep(delay_normal)
-
-                if enviados % cada_cuantos == 0:
-                    await asyncio.sleep(pausa_mas_larga)
+                if enviados % ruptura == 0:
+                    tmp = await bot.send_message(chat_id=user_id, text="‎")
+                    await asyncio.sleep(pausa_larga)
+                    try:
+                        await tmp.delete()
+                    except: pass
 
                 break
-
             except RetryAfter as e:
-                wait = int(e.retry_after) + 1
-                await asyncio.sleep(wait)
-
+                await asyncio.sleep(int(e.retry_after)+1)
             except BadRequest:
                 break
-
             except Exception:
                 break
 
