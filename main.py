@@ -792,7 +792,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]]
         ),
-    )]]
         ),
     )
 
