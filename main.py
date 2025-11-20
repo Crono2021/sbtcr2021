@@ -5,11 +5,11 @@ import time
 import unicodedata
 from pathlib import Path
 from html import escape
-
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputFile
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,34 +21,42 @@ from telegram.ext import (
 )
 
 # ======================================================
-#   CONFIGURACIÓN DEL BOT
+#   CONFIGURACIÓN
 # ======================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-
-# ID DEL OWNER — PERMISOS ESPECIALES
 OWNER_ID = 5540195020
 
-# Carpeta persistente de Railway
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 TOPICS_FILE = DATA_DIR / "topics.json"
 USERS_FILE = DATA_DIR / "users.json"
 
-# Tamaño de página (temas por página en listados)
 PAGE_SIZE = 30
-# Cuántos temas se muestran en "Recientes"
 RECENT_LIMIT = 20
-
-# Películas: paginación y búsquedas
 PELIS_PAGE_SIZE = 50
 PELIS_MAX_RESULTS = 500
 
 
 # ======================================================
-#   HELPERS (acentos / primera letra)
+#   UTILIDADES
 # ======================================================
+def load_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return default
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
 def get_first_and_base(name: str):
     if not name:
         return None, None
@@ -62,43 +70,14 @@ def get_first_and_base(name: str):
 
 
 # ======================================================
-#   LOAD / SAVE TOPICS
+#   TOPICS
 # ======================================================
 def load_topics():
-    if not TOPICS_FILE.exists():
-        return {}
-
-    try:
-        with open(TOPICS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {}
-
-    changed = False
-    for tid, info in list(data.items()):
-        if tid.startswith("_"):
-            # claves de sistema si algún día las usas
-            continue
-
-        if "name" not in info:
-            del data[tid]
-            changed = True
-            continue
-
-        info.setdefault("messages", [])
-        info.setdefault("created_at", 0)
-        if info.get("is_pelis"):
-            info.setdefault("movies", [])
-
-    if changed:
-        save_topics(data)
-
-    return data
+    return load_json(TOPICS_FILE, {})
 
 
 def save_topics(data):
-    with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_json(TOPICS_FILE, data)
 
 
 def get_pelis_topic_id(topics=None):
@@ -111,147 +90,114 @@ def get_pelis_topic_id(topics=None):
 
 
 # ======================================================
-#   LOAD / SAVE USERS
+#   REGISTRO DE USUARIOS
 # ======================================================
 def load_users():
-    if not USERS_FILE.exists():
-        return {}
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return load_json(USERS_FILE, {})
 
 
 def save_users(data):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_json(USERS_FILE, data)
 
 
-def register_user(user):
-    if not user:
+async def register_user(update: Update):
+    if not update.effective_user:
         return
+
+    u = update.effective_user
     users = load_users()
-    uid = str(user.id)
-    entry = users.get(uid, {})
 
-    entry["id"] = user.id
-    entry["first_name"] = user.first_name or ""
-    entry["last_name"] = user.last_name or ""
-    entry["username"] = user.username or ""
-    entry["is_bot"] = bool(user.is_bot)
-    if "first_seen" not in entry:
-        entry["first_seen"] = int(time.time())
-
-    users[uid] = entry
-    save_users(users)
+    if str(u.id) not in users:
+        users[str(u.id)] = {
+            "id": u.id,
+            "username": u.username or "",
+            "name": u.first_name or "",
+        }
+        save_users(users)
 
 
 # ======================================================
-#   DETECTAR TEMAS Y GUARDAR MENSAJES
+#   DETECTAR MENSAJES EN GROUP
 # ======================================================
 async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
         return
-
     if msg.chat.id != GROUP_ID:
         return
-
     if msg.message_thread_id is None:
         return
 
-    topic_id = str(msg.message_thread_id)
     topics = load_topics()
+    tid = str(msg.message_thread_id)
 
-    # Crear nuevo tema
-    if topic_id not in topics:
-        topic_name = None
+    # Crear tema si no existe
+    if tid not in topics:
+        name = None
 
-        # 1) Si el mensaje es el de creación del tema, usamos ese nombre
         if msg.forum_topic_created:
-            topic_name = msg.forum_topic_created.name or None
+            name = msg.forum_topic_created.name
 
-        # 2) Si no, intentamos pedirle a Telegram el nombre real del tema
-        if not topic_name:
+        if not name:
             try:
-                forum_topic = await context.bot.get_forum_topic(
-                    chat_id=msg.chat.id,
-                    message_thread_id=msg.message_thread_id,
+                t = await context.bot.get_forum_topic(
+                    chat_id=GROUP_ID,
+                    message_thread_id=msg.message_thread_id
                 )
-                if forum_topic and getattr(forum_topic, "name", None):
-                    topic_name = forum_topic.name
-            except Exception as e:
-                print("[detect] Error get_forum_topic:", e)
+                if t and t.name:
+                    name = t.name
+            except Exception:
+                pass
 
-        # 3) Fallback por si todo falla
-        if not topic_name:
-            topic_name = f"Tema {topic_id}"
+        if not name:
+            name = f"Tema {tid}"
 
-        topics[topic_id] = {
-            "name": topic_name,
+        topics[tid] = {
+            "name": name,
             "messages": [],
-            "created_at": msg.date.timestamp() if msg.date else 0,
+            "created_at": msg.date.timestamp() if msg.date else 0
         }
 
         try:
             await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
-                parse_mode="HTML",
+                f"📄 Tema detectado:\n<b>{escape(name)}</b>",
+                parse_mode="HTML"
             )
-        except Exception:
+        except:
             pass
 
-    # Asegurar estructura del tema
-    topic = topics[topic_id]
-    topic.setdefault("messages", [])
-    if topic.get("is_pelis"):
-        topic.setdefault("movies", [])
-
     # Guardar mensaje
-    topic["messages"].append({"id": msg.message_id})
+    topics[tid]["messages"].append({"id": msg.message_id})
 
-    # Si es de pelis → indexar título por caption/text
-    if topic.get("is_pelis"):
+    # Si es tema de pelis
+    if topics[tid].get("is_pelis"):
         title = msg.caption or msg.text or ""
-        title = title.strip()
-        if title:
-            topic["movies"].append({"id": msg.message_id, "title": title})
+        if title.strip():
+            topics[tid].setdefault("movies", [])
+            topics[tid]["movies"].append({"id": msg.message_id, "title": title})
 
     save_topics(topics)
 
 
 # ======================================================
-#   ORDENAR TEMAS
+#   ORDENAR TEMAS (acentos, símbolos, ñ…)
 # ======================================================
 def ordenar_temas(items):
-    """
-    Orden alfabético correcto con acentos:
-    - grupo 0 → símbolos y números
-    - grupo 1 → letras A-Z
-      - dentro: Á antes que A
-      - Ñ después de N
-    """
-
     def clave(item):
         _tid, info = item
         n = info["name"].strip()
-        if not n:
-            return (3, "", 0, n)
 
         first, base = get_first_and_base(n)
-        if not first:
+        if not base:
             return (3, "", 0, n)
 
-        # símbolos / números
+        # Símbolos/números
         if not ("A" <= base <= "Z"):
             return (0, base, 0, n.lower())
 
-        # letras
         accent_rank = 1
         base_key = base
 
-        # caso especial Ñ
         if first == "Ñ":
             base_key = "N"
             accent_rank = 2
@@ -268,18 +214,9 @@ def ordenar_temas(items):
 #   FILTRAR POR LETRA
 # ======================================================
 def filtrar_por_letra(topics, letter):
-    letter = letter.upper()
     res = []
-
     for tid, info in topics.items():
-        # saltar claves internas
-        if str(tid).startswith("_"):
-            continue
-
         n = info["name"].strip()
-        if not n:
-            continue
-
         first, base = get_first_and_base(n)
         if not base:
             continue
@@ -290,7 +227,6 @@ def filtrar_por_letra(topics, letter):
         else:
             if base == letter:
                 res.append((tid, info))
-
     return ordenar_temas(res)
 
 
@@ -311,7 +247,7 @@ def build_main_keyboard():
 
     rows.append([
         InlineKeyboardButton("🔍 Buscar series", callback_data="search"),
-        InlineKeyboardButton("🕒 Recientes", callback_data="recent"),
+        InlineKeyboardButton("🕒 Recientes", callback_data="recent")
     ])
 
     rows.append([InlineKeyboardButton("🍿 Películas", callback_data="pelis")])
@@ -322,32 +258,27 @@ def build_main_keyboard():
 async def show_main_menu(chat, context):
     context.user_data.pop("search_mode", None)
     await chat.send_message(
-        "🎬 <b>Catálogo de series</b>\n"
-        "Elige una letra, pulsa Recientes, Películas o escribe para buscar.",
+        "🎬 <b>Catálogo de series</b>",
         parse_mode="HTML",
-        reply_markup=build_main_keyboard(),
+        reply_markup=build_main_keyboard()
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Registrar usuario SIEMPRE que use /start
-    register_user(update.effective_user)
-
+async def start(update, context):
+    await register_user(update)
     if update.effective_chat.type != "private":
-        await update.message.reply_text("Entra en privado conmigo para usar el menú 😊")
         return
     await show_main_menu(update.effective_chat, context)
 
 
-async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def temas(update, context):
     if update.effective_chat.type != "private":
-        await update.message.reply_text("Usa /temas en privado.")
         return
     await show_main_menu(update.effective_chat, context)
 
 
 # ======================================================
-#   PÁGINAS POR LETRA
+#   PÁGINAS POR LETRA + paginación
 # ======================================================
 def build_letter_page(letter, page, topics):
     items = filtrar_por_letra(topics, letter)
@@ -355,18 +286,16 @@ def build_letter_page(letter, page, topics):
 
     if total == 0:
         return (
-            f"📭 No hay series que empiecen por <b>{letter}</b>.",
+            f"📭 No hay temas para “{letter}”.",
             InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
         )
 
-    total_pages = math.ceil(total / PAGE_SIZE)
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
     page = max(1, min(page, total_pages))
 
-    start = (page - 1) * PAGE_SIZE
-    end = start + PAGE_SIZE
-    subset = items[start:end]
+    subset = items[(page-1)*PAGE_SIZE : page*PAGE_SIZE]
 
-    keyboard = [
+    kb = [
         [InlineKeyboardButton(f"🎬 {escape(info['name'])}", callback_data=f"t:{tid}")]
         for tid, info in subset
     ]
@@ -377,22 +306,24 @@ def build_letter_page(letter, page, topics):
     nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
         nav.append(InlineKeyboardButton("➡️", callback_data=f"page:{letter}:{page+1}"))
+    kb.append(nav)
 
-    keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
+    kb.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
-    title = f"🎬 <b>Series que empiezan por “{letter}”</b>"
-    return f"{title}\nMostrando {len(subset)} de {total}.", InlineKeyboardMarkup(keyboard)
+    return (
+        f"🎬 <b>Temas por “{letter}”</b>\nMostrando {len(subset)} de {total}.",
+        InlineKeyboardMarkup(kb)
+    )
 
 
-async def on_letter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_letter(update, context):
     q = update.callback_query
-    _, l = q.data.split(":")
-    text, markup = build_letter_page(l, 1, load_topics())
+    _, letter = q.data.split(":")
+    text, markup = build_letter_page(letter, 1, load_topics())
     await q.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
 
 
-async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_page(update, context):
     q = update.callback_query
     _, letter, p = q.data.split(":")
     p = int(p)
@@ -401,74 +332,80 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   RECENTES / BUSCAR / PELIS
+#   REENVIAR TEMA — FIABLE
 # ======================================================
-async def on_main_menu(update, context):
+async def send_topic(update, context):
     q = update.callback_query
-    await q.edit_message_text(
-        "🎬 <b>Catálogo de series</b>",
-        parse_mode="HTML",
-        reply_markup=build_main_keyboard(),
-    )
-    context.user_data.pop("search_mode", None)
+    _, tid = q.data.split(":")
+    topics = load_topics()
 
+    if tid not in topics:
+        await q.edit_message_text("❌ Tema no encontrado.")
+        return
 
-async def on_recent_btn(update, context):
-    q = update.callback_query
-    items = list(load_topics().items())
-    # quitar claves internas
-    items = [(tid, info) for tid, info in items if not str(tid).startswith("_")]
+    msgs = topics[tid]["messages"]
+    total = len(msgs)
+    if total == 0:
+        await q.edit_message_text("❌ Tema vacío.")
+        return
 
-    items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
-    items = items[:RECENT_LIMIT]
+    await q.edit_message_text("📨 Enviando mensajes…")
 
-    keys = [
-        [InlineKeyboardButton(f"🎬 {escape(info['name'])}", callback_data=f"t:{tid}")]
-        for tid, info in items
-    ]
-    keys.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
+    bot = context.bot
+    uid = q.from_user.id
+    sent = 0
 
-    await q.edit_message_text("🕒 <b>Series recientes</b>", parse_mode="HTML",
-                              reply_markup=InlineKeyboardMarkup(keys))
+    for batch_start in range(0, total, 1):
+        mid = msgs[batch_start]["id"]
 
+        success = False
+        attempts = 0
 
-async def on_search_btn(update, context):
-    q = update.callback_query
-    context.user_data["search_mode"] = "series"
-    await q.edit_message_text(
-        "🔍 Escribe parte del nombre de la serie.",
-        parse_mode="HTML",
+        while not success and attempts < 5:
+            attempts += 1
+            try:
+                await bot.forward_message(uid, GROUP_ID, mid)
+                success = True
+            except Exception:
+                await asyncio.sleep(1)
+
+        sent += 1
+
+        # prevención de flood
+        if sent % 70 == 0:
+            await asyncio.sleep(2)
+
+    await bot.send_message(
+        uid,
+        f"✔ Enviados {sent} mensajes.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
     )
 
 
+# ======================================================
+#   PELÍCULAS
+# ======================================================
 async def on_pelis_btn(update, context):
     q = update.callback_query
     context.user_data["search_mode"] = "pelis"
     await q.edit_message_text(
-        "🍿 Escribe parte del título de la película.",
+        "🍿 Escribe parte del título.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
     )
 
 
-# ======================================================
-#   SEARCH (SERIES / PELIS)
-# ======================================================
-def build_pelis_page(matches, page, pelis_tid):
+def build_pelis_page(matches, page, tid):
     total = len(matches)
     total_pages = max(1, math.ceil(total / PELIS_PAGE_SIZE))
     page = max(1, min(page, total_pages))
 
-    start = (page - 1) * PELIS_PAGE_SIZE
-    end = start + PELIS_PAGE_SIZE
-    subset = matches[start:end]
+    subset = matches[(page-1)*PELIS_PAGE_SIZE : page*PELIS_PAGE_SIZE]
 
-    kb = []
-    for mid, title in subset:
-        kb.append([
-            InlineKeyboardButton(f"🎬 {escape(title)}", callback_data=f"pelis_msg:{pelis_tid}:{mid}")
-        ])
+    kb = [
+        [InlineKeyboardButton(f"🎬 {escape(title)}", callback_data=f"pelis_msg:{tid}:{mid}")]
+        for mid, title in subset
+    ]
 
     nav = []
     if page > 1:
@@ -476,167 +413,34 @@ def build_pelis_page(matches, page, pelis_tid):
     nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
         nav.append(InlineKeyboardButton("➡️", callback_data=f"pelis_page:{page+1}"))
-
     kb.append(nav)
-    kb.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
+    kb.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
     return InlineKeyboardMarkup(kb)
 
 
-async def search_text(update, context):
-    msg = update.message
-    chat = msg.chat
-
-    if chat.type != "private":
-        return
-
-    text = msg.text.strip()
-    if not text:
-        return
-
-    mode = context.user_data.get("search_mode", "series")
-    topics = load_topics()
-
-    # =======================
-    #     BUSCAR PELIS
-    # =======================
-    if mode == "pelis":
-        pelis_tid = get_pelis_topic_id(topics)
-        if not pelis_tid:
-            await chat.send_message("🍿 No hay tema de películas configurado.")
-            return
-
-        movies = topics[pelis_tid].get("movies", [])
-        q = text.lower()
-
-        matches = []
-        seen = set()
-        for m in movies:
-            mid = m["id"]
-            title = m["title"]
-            if mid in seen:
-                continue
-            if q in title.lower():
-                matches.append((mid, title))
-                seen.add(mid)
-
-        if not matches:
-            await chat.send_message(
-                f"🍿 No encontré resultados para <b>{escape(text)}</b>",
-                parse_mode="HTML",
-            )
-            return
-
-        matches.sort(key=lambda x: x[1].lower())
-        matches = matches[:PELIS_MAX_RESULTS]
-
-        markup = build_pelis_page(matches, 1, pelis_tid)
-        context.user_data["pelis_results"] = matches
-        context.user_data["pelis_tid"] = pelis_tid
-
-        await chat.send_message(
-            f"🍿 Resultados para <b>{escape(text)}</b> ({len(matches)}).",
-            reply_markup=markup,
-            parse_mode="HTML",
-        )
-        return
-
-    # =======================
-    #     BUSCAR SERIES
-    # =======================
-    q = text.lower()
-    found = [
-        (tid, info)
-        for tid, info in topics.items()
-        if not str(tid).startswith("_") and q in info["name"].lower()
-    ]
-
-    if not found:
-        await chat.send_message(
-            f"🔍 No encontré series con: <b>{escape(text)}</b>",
-            parse_mode="HTML",
-        )
-        return
-
-    found = ordenar_temas(found)[:30]
-
-    kb = [
-        [InlineKeyboardButton(f"🎬 {escape(info['name'])}", callback_data=f"t:{tid}")]
-        for tid, info in found
-    ]
-    kb.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
-
-    await chat.send_message(
-        f"🔍 Resultados para <b>{escape(text)}</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
-
-
-# ======================================================
-#   PAGINACIÓN DE PELÍCULAS
-# ======================================================
 async def on_pelis_page(update, context):
     q = update.callback_query
     _, p = q.data.split(":")
     page = int(p)
 
-    matches = context.user_data.get("pelis_results", [])
-    tid = context.user_data.get("pelis_tid")
+    matches = context.user_data["pelis_results"]
+    tid = context.user_data["pelis_tid"]
 
     markup = build_pelis_page(matches, page, tid)
     await q.edit_message_reply_markup(markup)
 
 
-# ======================================================
-#   SEND TOPIC
-# ======================================================
-async def send_topic(update, context):
-    q = update.callback_query
-    _, tid = q.data.split(":")
-    tid = str(tid)
-
-    topics = load_topics()
-    if tid not in topics:
-        await q.edit_message_text("❌ Tema no encontrado.")
-        return
-
-    await q.edit_message_text("📨 Enviando...")
-
-    bot = context.bot
-    uid = q.from_user.id
-
-    for m in topics[tid]["messages"]:
-        try:
-            await bot.forward_message(chat_id=uid, from_chat_id=GROUP_ID, message_id=m["id"])
-        except Exception:
-            pass
-
-    await bot.send_message(
-        uid,
-        "✔ Terminado.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
-    )
-
-
-# ======================================================
-#   ENVIAR UNA PELÍCULA
-# ======================================================
 async def send_peli_message(update, context):
     q = update.callback_query
     _, tid, mid = q.data.split(":")
     mid = int(mid)
-
-    bot = context.bot
     uid = q.from_user.id
 
     try:
-        await bot.forward_message(chat_id=uid, from_chat_id=GROUP_ID, message_id=mid)
-        await bot.send_message(
-            uid, "🍿 Película enviada.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]])
-        )
-    except Exception:
+        await context.bot.forward_message(uid, GROUP_ID, mid)
+        await context.bot.send_message(uid, "🍿 Película enviada.")
+    except:
         await q.answer("No se pudo reenviar.", show_alert=True)
 
 
@@ -646,7 +450,6 @@ async def send_peli_message(update, context):
 async def setpelis(update, context):
     msg = update.message
 
-    # Solo puede usarse *una vez*
     topics = load_topics()
     if get_pelis_topic_id(topics):
         await msg.reply_text("🍿 Ya existe un tema de películas.")
@@ -661,274 +464,181 @@ async def setpelis(update, context):
     topics.setdefault(tid, {
         "name": f"Tema {tid}",
         "messages": [],
-        "created_at": msg.date.timestamp() if msg.date else 0,
+        "created_at": msg.date.timestamp() if msg.date else 0
     })
-
     topics[tid]["is_pelis"] = True
-    topics[tid].setdefault("movies", [])
+    topics[tid]["movies"] = []
 
     save_topics(topics)
 
-    await msg.reply_text("🍿 Tema configurado como Películas correctamente.")
+    await msg.reply_text("🍿 Tema configurado como Películas.")
 
 
 # ======================================================
-#   /BORRARTEMA AVANZADO (solo owner, por letra)
+#   /BORRARTEMA AVANZADO (por letra)
 # ======================================================
-def build_borrartema_letters_keyboard():
-    rows = []
-    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-
-    for i in range(0, 26, 5):
-        rows.append([
-            InlineKeyboardButton(l, callback_data=f"del_letter:{l}")
-            for l in letters[i:i+5]
-        ])
-
-    rows.append([InlineKeyboardButton("#", callback_data="del_letter:#")])
-    rows.append([InlineKeyboardButton("❌ Cancelar", callback_data="main_menu")])
-
-    return InlineKeyboardMarkup(rows)
-
-
 async def borrartema(update, context):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ Sin permiso.")
         return
 
-    kb = build_borrartema_letters_keyboard()
+    kb = []
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
+    for row in range(0, 27, 5):
+        kb.append([InlineKeyboardButton(l, callback_data=f"b_del_letter:{l}") for l in letters[row:row+5]])
+
     await update.message.reply_text(
-        "🗑 <b>Borrar tema</b>\nElige una letra para ver los temas que empiezan por esa letra.",
-        reply_markup=kb,
-        parse_mode="HTML",
+        "🗑 Elige una letra:",
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
 
-async def on_del_menu(update, context):
-    # Volver al menú de letras
+async def borrartema_letter(update, context):
     q = update.callback_query
-    if q.from_user.id != OWNER_ID:
-        await q.answer("⛔ No permitido.", show_alert=True)
-        return
+    _, letter = q.data.split(":")
 
-    kb = build_borrartema_letters_keyboard()
-    await q.edit_message_text(
-        "🗑 <b>Borrar tema</b>\nElige una letra para ver los temas que empiezan por esa letra.",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
-
-
-async def on_del_letter(update, context):
-    q = update.callback_query
-    if q.from_user.id != OWNER_ID:
-        await q.answer("⛔ No permitido.", show_alert=True)
-        return
-
-    _, letter = q.data.split(":", 1)
     topics = load_topics()
     items = filtrar_por_letra(topics, letter)
 
     if not items:
-        kb = build_borrartema_letters_keyboard()
-        await q.edit_message_text(
-            f"📭 No hay temas que empiecen por <b>{escape(letter)}</b>.",
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
+        await q.edit_message_text("❌ No hay temas.")
         return
 
     kb = [
-        [InlineKeyboardButton(f"❌ {escape(info['name'])}", callback_data=f"del_topic:{tid}")]
+        [InlineKeyboardButton(f"❌ {escape(info['name'])}", callback_data=f"b_del_topic:{tid}")]
         for tid, info in items
     ]
-    kb.append([InlineKeyboardButton("🔙 Letras", callback_data="del_menu")])
+    kb.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
     await q.edit_message_text(
-        f"🗑 Temas con la letra <b>{escape(letter)}</b>:\n"
-        "Pulsa en el que quieras eliminar.",
+        f"🗑 Elige tema para borrar (letra {letter}):",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
 
-async def delete_topic(update, context):
+async def borrartema_delete(update, context):
     q = update.callback_query
-    if q.from_user.id != OWNER_ID:
-        await q.edit_message_text("⛔ No permitido.")
-        return
+    _, tid = q.data.split(":")
 
-    _, tid = q.data.split(":", 1)
     topics = load_topics()
-
     if tid in topics:
-        name = topics[tid].get("name", "")
         del topics[tid]
         save_topics(topics)
-        await q.edit_message_text(f"🗑 Tema borrado:\n<b>{escape(name)}</b>", parse_mode="HTML")
+        await q.edit_message_text("✔ Tema borrado.")
     else:
-        await q.edit_message_text("❌ No existe.")
+        await q.edit_message_text("❌ No encontrado.")
 
 
 # ======================================================
 #   /BORRARPELI — SOLO OWNER
 # ======================================================
 async def borrarpeli(update, context):
-    msg = update.message
     if update.effective_user.id != OWNER_ID:
-        await msg.reply_text("⛔ No tienes permiso.")
+        await update.message.reply_text("⛔ No permitido.")
         return
 
-    query = msg.text.replace("/borrarpeli", "").strip()
+    query = update.message.text.replace("/borrarpeli", "").strip()
     if not query:
-        await msg.reply_text("Uso: /borrarpeli título")
+        await update.message.reply_text("Uso: /borrarpeli título")
         return
 
     topics = load_topics()
-    pelis_tid = get_pelis_topic_id(topics)
-    if not pelis_tid:
-        await msg.reply_text("🍿 No hay tema de películas.")
+    tid = get_pelis_topic_id(topics)
+    if not tid:
+        await update.message.reply_text("🍿 No hay tema de películas.")
         return
 
-    movies = topics[pelis_tid].get("movies", [])
+    movies = topics[tid].get("movies", [])
     q = query.lower()
 
     matches = [(m["id"], m["title"]) for m in movies if q in m["title"].lower()]
 
     if not matches:
-        await msg.reply_text("❌ No encontré coincidencias.")
+        await update.message.reply_text("❌ No encontrado.")
         return
 
-    kb = []
-    for mid, title in matches:
-        kb.append([InlineKeyboardButton(f"❌ {title}", callback_data=f"delpeli:{pelis_tid}:{mid}")])
+    kb = [
+        [InlineKeyboardButton(f"❌ {escape(title)}", callback_data=f"delpeli:{tid}:{mid}")]
+        for mid, title in matches
+    ]
+    kb.append([InlineKeyboardButton("Cancelar", callback_data="main_menu")])
 
-    kb.append([InlineKeyboardButton("🔙 Cancelar", callback_data="main_menu")])
-
-    await msg.reply_text(
-        f"🍿 Coincidencias para <b>{escape(query)}</b>:",
-        parse_mode="HTML",
+    await update.message.reply_text(
+        f"Coincidencias:",
         reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="HTML"
     )
 
 
 async def delete_peli(update, context):
     q = update.callback_query
-    if q.from_user.id != OWNER_ID:
-        await q.edit_message_text("⛔ No permitido.")
-        return
-
     _, tid, mid = q.data.split(":")
     mid = int(mid)
 
     topics = load_topics()
-
     if tid not in topics:
-        await q.edit_message_text("❌ Tema no encontrado.")
+        await q.edit_message_text("❌ No encontrado.")
         return
 
-    movies = topics[tid].get("movies", [])
-    newlist = [m for m in movies if m["id"] != mid]
-    topics[tid]["movies"] = newlist
+    topics[tid]["movies"] = [m for m in topics[tid].get("movies", []) if m["id"] != mid]
     save_topics(topics)
-
-    await q.edit_message_text("🗑 Película eliminada.")
-
-
-# ======================================================
-#   /USUARIOS — SOLO OWNER
-# ======================================================
-async def usuarios(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ Sin permiso.")
-        return
-
-    users = load_users()
-    if not users:
-        await update.message.reply_text("📭 No hay usuarios registrados aún.")
-        return
-
-    # Ordenamos por ID
-    entries = sorted(users.values(), key=lambda u: u.get("id", 0))
-
-    lines = ["👥 <b>Usuarios registrados</b>\n"]
-    for u in entries:
-        uid = u.get("id")
-        name = (u.get("first_name", "") + " " + u.get("last_name", "")).strip()
-        username = u.get("username") or ""
-        if username:
-            uname = f"@{username}"
-        else:
-            uname = "(sin usuario)"
-
-        name_disp = escape(name) if name else "(sin nombre)"
-        lines.append(
-            f"• {name_disp} — {uname} — <code>{uid}</code>"
-        )
-
-    text = "\n".join(lines)
-    await update.message.reply_text(text, parse_mode="HTML")
+    await q.edit_message_text("✔ Película borrada.")
 
 
 # ======================================================
-#   /EXPORTAR — SOLO OWNER (enviar topics.json)
+#   /IMPORTAR /EXPORTAR — SOLO OWNER
 # ======================================================
-async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def exportar(update, context):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ Sin permiso.")
         return
 
     if not TOPICS_FILE.exists():
-        await update.message.reply_text("📭 Aún no existe topics.json.")
+        await update.message.reply_text("❌ No hay topics.json")
         return
 
-    try:
-        with open(TOPICS_FILE, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename="topics.json",
-                caption="📁 Backup de topics.json",
-            )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error al enviar el archivo: {e}")
+    await update.message.reply_document(InputFile(TOPICS_FILE), filename="topics.json")
 
 
-# ======================================================
-#   /IMPORTAR — SOLO OWNER (sobrescribir topics.json)
-# ======================================================
-async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def importar(update, context):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ Sin permiso.")
         return
 
-    msg = update.message
-    if not msg.reply_to_message or not msg.reply_to_message.document:
-        await msg.reply_text(
-            "📥 Para importar, responde a un archivo JSON con el comando /importar."
-        )
+    if not update.message.document:
+        await update.message.reply_text("Sube un archivo JSON.")
         return
 
-    doc = msg.reply_to_message.document
-    if not doc.file_name.lower().endswith(".json"):
-        await msg.reply_text("❌ El archivo debe ser .json")
-        return
-
-    await msg.reply_text("⏳ Importando topics.json... (sobrescribirá el actual)")
+    doc = update.message.document
+    file = await doc.get_file()
+    bytes_data = await file.download_as_bytearray()
 
     try:
-        file = await context.bot.get_file(doc.file_id)
-        await file.download_to_drive(custom_path=str(TOPICS_FILE))
-
-        # Validar JSON
-        with open(TOPICS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Normalizar y guardar
+        data = json.loads(bytes_data.decode("utf-8"))
         save_topics(data)
-
-        await msg.reply_text("✔ topics.json importado correctamente.")
+        await update.message.reply_text("✔ Importado correctamente.")
     except Exception as e:
-        await msg.reply_text(f"❌ Error al importar JSON: {e}")
+        await update.message.reply_text(f"❌ Error importando: {e}")
+
+
+# ======================================================
+#   /USUARIOS — SOLO OWNER
+# ======================================================
+async def usuarios(update, context):
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    users = load_users()
+    if not users:
+        await update.message.reply_text("No hay usuarios registrados.")
+        return
+
+    text = "📋 <b>Usuarios registrados</b>\n\n"
+    for u in users.values():
+        text += f"• <b>{escape(u['name'])}</b> @{u['username']} — <code>{u['id']}</code>\n"
+
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ======================================================
@@ -943,29 +653,25 @@ def main():
     app.add_handler(CommandHandler("setpelis", setpelis))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("borrarpeli", borrarpeli))
-    app.add_handler(CommandHandler("usuarios", usuarios))
     app.add_handler(CommandHandler("exportar", exportar))
     app.add_handler(CommandHandler("importar", importar))
+    app.add_handler(CommandHandler("usuarios", usuarios))
 
     # Callbacks
+    app.add_handler(CallbackQueryHandler(borrartema_letter, pattern=r"^b_del_letter:"))
+    app.add_handler(CallbackQueryHandler(borrartema_delete, pattern=r"^b_del_topic:"))
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:"))
-    app.add_handler(CallbackQueryHandler(on_recent_btn, pattern=r"^recent$"))
-    app.add_handler(CallbackQueryHandler(on_search_btn, pattern=r"^search$"))
     app.add_handler(CallbackQueryHandler(on_pelis_btn, pattern=r"^pelis$"))
-    app.add_handler(CallbackQueryHandler(on_main_menu, pattern=r"^main_menu$"))
     app.add_handler(CallbackQueryHandler(on_pelis_page, pattern=r"^pelis_page:"))
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
-    app.add_handler(CallbackQueryHandler(on_del_letter, pattern=r"^del_letter:"))
-    app.add_handler(CallbackQueryHandler(on_del_menu, pattern=r"^del_menu$"))
-    app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del_topic:"))
     app.add_handler(CallbackQueryHandler(delete_peli, pattern=r"^delpeli:"))
 
-    # Text search (chat privado)
+    # Búsqueda
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
 
-    # Detect messages in group (temas / mensajes)
+    # Detección de mensajes
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, detect))
 
     print("BOT LISTO ✔")
