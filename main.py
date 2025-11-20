@@ -770,9 +770,9 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
     enviados = 0
 
-    delay = 0.15
+    delay = 0.12
     ruptura = 150
-    pausa_larga = 2
+    pausa_larga = 1.5
 
     for mid in mensajes:
         while True:
@@ -783,20 +783,28 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=mid,
                 )
                 enviados += 1
+
                 await asyncio.sleep(delay)
 
                 if enviados % ruptura == 0:
-                    tmp = await bot.send_message(chat_id=user_id, text="‎")
-                    await asyncio.sleep(pausa_larga)
                     try:
-                        await tmp.delete()
-                    except: pass
+                        fantasma = await bot.send_message(chat_id=user_id, text="‎")
+                        await asyncio.sleep(pausa_larga)
+                        try:
+                            await fantasma.delete()
+                        except:
+                            pass
+                    except Exception:
+                        pass
 
                 break
+
             except RetryAfter as e:
                 await asyncio.sleep(int(e.retry_after)+1)
+
             except BadRequest:
                 break
+
             except Exception:
                 break
 
