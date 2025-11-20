@@ -1386,7 +1386,7 @@ def build_ocultar_letter_page(letter, page, topics_dict):
     keyboard.append([InlineKeyboardButton("🔤 Elegir otra letra", callback_data="oc_main")])
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
-    text = f"🙈 <b>Temas por '{letter}'</b>
+    text = f"🙈 <b>Temas por '{letter}'</b>"
 Mostrando {len(slice_items)} de {total}."
 
     return text, InlineKeyboardMarkup(keyboard)
