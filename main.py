@@ -126,6 +126,8 @@ def get_pelis_topic_id(topics=None):
     if topics is None:
         topics = load_topics()
     for tid, info in topics.items():
+        if info.get("hidden"):
+            continue
         if info.get("is_pelis"):
             return tid
     return None
@@ -567,7 +569,7 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ordenamos por created_at descendente
     items = list(topics.items())
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
-    items = items[:RECENT_LIMIT]
+    items = [i for i in items if not i[1].get("hidden")][:RECENT_LIMIT]
 
     keyboard = []
     for tid, info in items:
@@ -658,7 +660,10 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         q = query_text.lower()
-        matches = []
+        matches = [
+            (tid, info)
+            for tid, info in topics.items()
+            if not info.get("hidden") and]
         seen_ids = set()
 
         for m in movies:
@@ -999,6 +1004,60 @@ def build_borrartema_main_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
+
+# ======================================================
+#   /OCULTAR — SOLO OWNER, SOLO EN PRIVADO
+# ======================================================
+async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+
+    # Solo OWNER
+    if update.effective_user.id != OWNER_ID:
+        await msg.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+
+    # Solo en privado
+    if msg.chat.type != "private":
+        await msg.reply_text("ℹ️ Este comando solo funciona en privado.")
+        return
+
+    if not context.args:
+        await msg.reply_text("❌ Uso: /ocultar NOMBRETEMA")
+        return
+
+    nombre_buscado = " ".join(context.args).lower()
+    topics = load_topics()
+
+    # Buscar coincidencias
+    coincidencias = [
+        (tid, info) for tid, info in topics.items()
+        if nombre_buscado in info.get("name", "").lower()
+    ]
+
+    if not coincidencias:
+        await msg.reply_text("❌ No encontré ningún tema con ese nombre.")
+        return
+
+    if len(coincidencias) > 1:
+        lista = "
+".join("• " + c[1]["name"] for c in coincidencias)
+        await msg.reply_text(
+            "⚠️ Hay varias coincidencias, sé más específico:
+" + lista
+        )
+        return
+
+    tid, info = coincidencias[0]
+    info["hidden"] = True
+    save_topics(topics)
+
+    await msg.reply_text(
+        f"✔ Tema ocultado:
+<b>{escape(info['name'])}</b>",
+        parse_mode="HTML",
+    )
+
+
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
@@ -1329,6 +1388,7 @@ def main():
     app.add_handler(CommandHandler("temas", temas))
 
     # Comandos solo owner
+    app.add_handler(CommandHandler("ocultar", ocultar))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
     app.add_handler(CommandHandler("setpelis", setpelis))
