@@ -126,8 +126,6 @@ def get_pelis_topic_id(topics=None):
     if topics is None:
         topics = load_topics()
     for tid, info in topics.items():
-        if tid == get_hidden_topic():
-            continue
         if info.get("is_pelis"):
             return tid
     return None
@@ -406,6 +404,9 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 def build_letter_page(letter, page, topics_dict):
     filtrados = filtrar_por_letra(topics_dict, letter)
+    hidden = get_hidden_topic()
+    if hidden:
+        filtrados = [i for i in filtrados if i[0] != hidden]
 
     total = len(filtrados)
     if total == 0:
@@ -567,10 +568,9 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Ordenamos por created_at descendente
-    hidden = get_hidden_topic()
     items = list(topics.items())
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
-    items = [i for i in items if i[0] != hidden][:RECENT_LIMIT]
+    items = items[:RECENT_LIMIT]
 
     keyboard = []
     for tid, info in items:
@@ -1002,52 +1002,6 @@ def build_borrartema_main_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
-
-# ======================================================
-#   /OCULTAR — SOLO OWNER, SOLO EN PRIVADO
-# ======================================================
-HIDDEN_FILE = DATA_DIR / "hidden.txt"
-
-def get_hidden_topic():
-    if not HIDDEN_FILE.exists():
-        return None
-    try:
-        return HIDDEN_FILE.read_text().strip()
-    except:
-        return None
-
-def set_hidden_topic(tid: str):
-    HIDDEN_FILE.write_text(tid)
-
-async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-
-    if msg.from_user.id != OWNER_ID:
-        await msg.reply_text("⛔ No tienes permiso.")
-        return
-
-    if msg.chat.type != "private":
-        await msg.reply_text("ℹ️ Este comando solo funciona en privado.")
-        return
-
-    if not context.args:
-        await msg.reply_text("❌ Uso: /ocultar NOMBRE_EXACTO_DEL_TEMA")
-        return
-
-    nombre = " ".join(context.args).lower()
-    topics = load_topics()
-
-    for tid, info in topics.items():
-        if info["name"].lower() == nombre:
-            set_hidden_topic(tid)
-            await msg.reply_text(
-                f"✔ Tema ocultado:\\n<b>{info['name']}</b>",
-                parse_mode="HTML"
-            )
-            return
-
-    await msg.reply_text("❌ No encontré un tema con ese nombre exacto.")
-
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
@@ -1378,7 +1332,6 @@ def main():
     app.add_handler(CommandHandler("temas", temas))
 
     # Comandos solo owner
-    app.add_handler(CommandHandler("ocultar", ocultar))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
     app.add_handler(CommandHandler("setpelis", setpelis))
