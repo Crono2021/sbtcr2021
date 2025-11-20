@@ -749,6 +749,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
 # ======================================================
+
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -767,20 +768,39 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
-    # El orden ya es cronológico por cómo se van registrando
-
     enviados = 0
 
+    delay_normal = 0.25
+    pausa_mas_larga = 2
+    cada_cuantos = 70
+
     for mid in mensajes:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=mid,
-            )
-            enviados += 1
-        except Exception as e:
-            print(f"[send_topic] ERROR reenviando {mid}: {e}")
+        while True:
+            try:
+                await bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=GROUP_ID,
+                    message_id=mid,
+                )
+
+                enviados += 1
+
+                await asyncio.sleep(delay_normal)
+
+                if enviados % cada_cuantos == 0:
+                    await asyncio.sleep(pausa_mas_larga)
+
+                break
+
+            except RetryAfter as e:
+                wait = int(e.retry_after) + 1
+                await asyncio.sleep(wait)
+
+            except BadRequest:
+                break
+
+            except Exception:
+                break
 
     await bot.send_message(
         chat_id=user_id,
@@ -791,9 +811,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ======================================================
-#   CALLBACK → enviar UNA película concreta
-# ======================================================
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
