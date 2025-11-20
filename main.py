@@ -749,6 +749,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
 # ======================================================
+
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -763,24 +764,49 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("📨 Enviando contenido del tema...")
 
+    import asyncio
+    from telegram.error import RetryAfter, BadRequest
+
     bot = context.bot
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
-    # El orden ya es cronológico por cómo se van registrando
-
     enviados = 0
 
+    delay = 0.12
+    ruptura = 150
+    pausa_larga = 1.5
+
     for mid in mensajes:
-        try:
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=GROUP_ID,
-                message_id=mid,
-            )
-            enviados += 1
-        except Exception as e:
-            print(f"[send_topic] ERROR reenviando {mid}: {e}")
+        while True:
+            try:
+                await bot.forward_message(
+                    chat_id=user_id,
+                    from_chat_id=GROUP_ID,
+                    message_id=mid,
+                )
+                enviados += 1
+                await asyncio.sleep(delay)
+
+                if enviados % ruptura == 0:
+                    try:
+                        fantasma = await bot.send_message(chat_id=user_id, text="‎")
+                        await asyncio.sleep(pausa_larga)
+                        try:
+                            await fantasma.delete()
+                        except:
+                            pass
+                    except:
+                        pass
+
+                break
+
+            except RetryAfter as e:
+                await asyncio.sleep(int(e.retry_after)+1)
+            except BadRequest:
+                break
+            except Exception:
+                break
 
     await bot.send_message(
         chat_id=user_id,
@@ -791,9 +817,6 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ======================================================
-#   CALLBACK → enviar UNA película concreta
-# ======================================================
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1260,6 +1283,44 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   MAIN
 # ======================================================
+# ============================
+#   /EXPORTAR y /IMPORTAR
+# ============================
+async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+    if not TOPICS_FILE.exists():
+        await update.message.reply_text("No existe topics.json.")
+        return
+    await update.message.reply_document(document=open(TOPICS_FILE, "rb"), filename="topics.json")
+
+async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        await update.message.reply_text("❌ Debes responder a un archivo JSON con /importar")
+        return
+
+    doc = update.message.reply_to_message.document
+    if not doc.file_name.endswith(".json"):
+        await update.message.reply_text("❌ El archivo debe ser .json")
+        return
+
+    file = await doc.get_file()
+    data = await file.download_as_bytearray()
+    try:
+        # Validate JSON
+        json.loads(data.decode("utf-8"))
+        with open(TOPICS_FILE, "wb") as f:
+            f.write(data)
+        await update.message.reply_text("✔ Base de datos importada correctamente.")
+    except Exception as e:
+        await update.message.reply_text("❌ Error al importar el JSON.")
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1274,6 +1335,8 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
+    app.add_handler(CommandHandler("exportar", exportar))
+    app.add_handler(CommandHandler("importar", importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
