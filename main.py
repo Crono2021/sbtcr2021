@@ -125,9 +125,7 @@ def get_pelis_topic_id(topics=None):
     """Busca el tema marcado como películas."""
     if topics is None:
         topics = load_topics()
-    for tid, info in topics.items() if not info.get('is_pelis'):
-        if info.get("is_pelis"):
-            continue
+    for tid, info in topics.items():
         if info.get("is_pelis"):
             return tid
     return None
@@ -303,15 +301,10 @@ def ordenar_temas(items):
 
 
 def filtrar_por_letra(topics, letter):
-    """
-    Devuelve lista [(tid, info), ...] filtrada por primera letra.
-    letter: 'A'..'Z' o '#'
-    Usa la letra base normalizada (Á -> A, É -> E, etc).
-    """
     letter = letter.upper()
     filtrados = []
 
-    for tid, info in topics.items() if not info.get('is_pelis'):
+    for tid, info in topics.items():
         if info.get("is_pelis"):
             continue
         nombre = info.get("name", "")
@@ -324,7 +317,6 @@ def filtrar_por_letra(topics, letter):
             continue
 
         if letter == "#":
-            # Todo lo que NO empiece por A-Z
             if not ("A" <= base <= "Z"):
                 filtrados.append((tid, info))
         else:
