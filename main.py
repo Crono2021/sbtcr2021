@@ -1344,15 +1344,15 @@ def build_ocultar_main_keyboard():
     rows.append([InlineKeyboardButton("🔙 Volver",callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
+
 def build_ocultar_letter_page(letter, page, topics_dict):
-    # Obtener lista filtrada correctamente
     base_list = filtrar_por_letra(topics_dict, letter)
     filtrados = [(tid, info) for tid, info in base_list if not info.get("hidden")]
 
     total = len(filtrados)
     if total == 0:
         return (
-            f"📭 No hay temas visibles que empiecen por <b>{letter}</b>.",
+            f"📭 No hay temas visibles que empiecen por <b>{escape(letter)}</b>.",
             build_ocultar_main_keyboard(),
         )
 
@@ -1366,9 +1366,10 @@ def build_ocultar_letter_page(letter, page, topics_dict):
 
     keyboard = []
     for tid, info in slice_items:
+        safe_name = escape(info.get("name", ""))
         keyboard.append([
             InlineKeyboardButton(
-                f"🙈 Ocultar: {escape(info.get('name',''))}",
+                f"🙈 Ocultar: {safe_name}",
                 callback_data=f"ocultar:{tid}"
             )
         ])
@@ -1386,10 +1387,10 @@ def build_ocultar_letter_page(letter, page, topics_dict):
     keyboard.append([InlineKeyboardButton("🔤 Elegir otra letra", callback_data="oc_main")])
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
 
-    text = f"🙈 <b>Temas por '{letter}'</b>"
+    text = f"🙈 <b>Temas por ‘{escape(letter)}’</b>
 Mostrando {len(slice_items)} de {total}."
-
     return text, InlineKeyboardMarkup(keyboard)
+
 
 
 async def on_oc_main(update, context):
