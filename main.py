@@ -1344,30 +1344,53 @@ def build_ocultar_main_keyboard():
     rows.append([InlineKeyboardButton("🔙 Volver",callback_data="main_menu")])
     return InlineKeyboardMarkup(rows)
 
-def build_ocultar_letter_page(letter,page,topics_dict):
-    filtrados=[(tid,info) for tid,info in filtrerar:=filtrar_por_letra(topics_dict,letter) if not info.get("hidden")]
-    total=len(filtrados)
-    if total==0:
-        return (f"📭 No hay temas visibles que empiecen por <b>{letter}</b>.", build_ocultar_main_keyboard())
+def build_ocultar_letter_page(letter, page, topics_dict):
+    # Obtener lista filtrada correctamente
+    base_list = filtrar_por_letra(topics_dict, letter)
+    filtrados = [(tid, info) for tid, info in base_list if not info.get("hidden")]
+
+    total = len(filtrados)
+    if total == 0:
+        return (
+            f"📭 No hay temas visibles que empiecen por <b>{letter}</b>.",
+            build_ocultar_main_keyboard(),
+        )
+
     import math
-    total_pages=max(1, math.ceil(total/PAGE_SIZE))
-    page=max(1,min(page,total_pages))
-    start=(page-1)*PAGE_SIZE
-    end=start+PAGE_SIZE
-    slice_items=filtrados[start:end]
-    keyboard=[]
-    for tid,info in slice_items:
-        keyboard.append([InlineKeyboardButton(f"🙈 Ocultar: {escape(info.get('name',''))}", callback_data=f"ocultar:{tid}")])
-    nav=[]
-    if total_pages>1:
-        if page>1: nav.append(InlineKeyboardButton("⬅️",callback_data=f"oc_page:{letter}:{page-1}"))
-        nav.append(InlineKeyboardButton(f"{page}/{total_pages}",callback_data="noop"))
-        if page<total_pages: nav.append(InlineKeyboardButton("➡️",callback_data=f"oc_page:{letter}:{page+1}"))
-    if nav: keyboard.append(nav)
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * PAGE_SIZE
+    end = start + PAGE_SIZE
+    slice_items = filtrados[start:end]
+
+    keyboard = []
+    for tid, info in slice_items:
+        keyboard.append([
+            InlineKeyboardButton(
+                f"🙈 Ocultar: {escape(info.get('name',''))}",
+                callback_data=f"ocultar:{tid}"
+            )
+        ])
+
+    nav = []
+    if total_pages > 1:
+        if page > 1:
+            nav.append(InlineKeyboardButton("⬅️", callback_data=f"oc_page:{letter}:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("➡️", callback_data=f"oc_page:{letter}:{page+1}"))
+    if nav:
+        keyboard.append(nav)
+
     keyboard.append([InlineKeyboardButton("🔤 Elegir otra letra", callback_data="oc_main")])
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
-    text=f"🙈 <b>Temas por '{letter}'</b>\nMostrando {len(slice_items)} de {total}."
+
+    text = f"🙈 <b>Temas por '{letter}'</b>
+Mostrando {len(slice_items)} de {total}."
+
     return text, InlineKeyboardMarkup(keyboard)
+
 
 async def on_oc_main(update, context):
     q=update.callback_query; await q.answer()
