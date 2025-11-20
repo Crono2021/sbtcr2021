@@ -1039,13 +1039,10 @@ async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(coincidencias) > 1:
-        lista = "
-".join("• " + c[1]["name"] for c in coincidencias)
+        lista = "\n".join("• " + c[1]["name"] for c in coincidencias)
         await msg.reply_text(
-            "⚠️ Hay varias coincidencias, sé más específico:
-" + lista
+            "⚠️ Hay varias coincidencias, sé más específico:\n" + lista
         )
-        return
 
     tid, info = coincidencias[0]
     info["hidden"] = True
