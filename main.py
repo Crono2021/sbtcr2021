@@ -127,6 +127,8 @@ def get_pelis_topic_id(topics=None):
         topics = load_topics()
     for tid, info in topics.items() if not info.get('is_pelis'):
         if info.get("is_pelis"):
+            continue
+        if info.get("is_pelis"):
             return tid
     return None
 
