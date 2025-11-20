@@ -2,7 +2,6 @@ import os
 import json
 import math
 import unicodedata
-import asyncio
 from pathlib import Path
 from html import escape
 from telegram import (
@@ -18,7 +17,6 @@ from telegram.ext import (
     CommandHandler,
     filters,
 )
-from telegram.error import RetryAfter, BadRequest
 
 # ======================================================
 #   CONFIGURACIÓN DEL BOT
@@ -750,7 +748,6 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
-#   (FUNCIÓN PARCHEADA PARA SOPORTAR >200 MENSAJES)
 # ======================================================
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -782,23 +779,11 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     message_id=mid,
                 )
                 enviados += 1
-
-                # Pausa mínima anti-flood
                 await asyncio.sleep(0.12)
                 break
-
             except RetryAfter as e:
-                wait_time = int(e.retry_after) + 1
-                print(f"[send_topic] Flood control — esperando {wait_time}s...")
-                await asyncio.sleep(wait_time)
-
-            except BadRequest as e:
-                # Mensaje borrado / no disponible, lo saltamos
-                print(f"[send_topic] BadRequest reenviando {mid}: {e}")
-                break
-
-            except Exception as e:
-                print(f"[send_topic] ERROR inesperado reenviando {mid}: {e}")
+                await asyncio.sleep(int(e.retry_after)+1)
+            except Exception:
                 break
 
     await bot.send_message(
@@ -806,6 +791,8 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"✔ Envío completado. {enviados} mensajes reenviados 🎉",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]]
+        ),
+    )]]
         ),
     )
 
@@ -1279,6 +1266,38 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   MAIN
 # ======================================================
+
+async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ No tienes permiso.")
+        return
+    if not TOPICS_FILE.exists():
+        await update.message.reply_text("No existe topics.json")
+        return
+    await update.message.reply_document(document=open(TOPICS_FILE,"rb"), filename="topics.json")
+
+async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ No tienes permiso.")
+        return
+    msg=update.message
+    if not msg.reply_to_message or not msg.reply_to_message.document:
+        await msg.reply_text("Responde a un archivo topics.json con /importar")
+        return
+    doc=msg.reply_to_message.document
+    if doc.file_name!="topics.json":
+        await msg.reply_text("El archivo debe llamarse topics.json")
+        return
+    file=await doc.get_file()
+    path="/tmp/topics.json"
+    await file.download_to_drive(path)
+    with open(path,"r",encoding="utf-8") as f:
+        data=json.load(f)
+    with open(TOPICS_FILE,"w",encoding="utf-8") as f:
+        json.dump(data,f,indent=4,ensure_ascii=False)
+    await msg.reply_text("✔ topics.json importado correctamente.")
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1293,6 +1312,8 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
+    app.add_handler(CommandHandler("exportar", exportar))
+    app.add_handler(CommandHandler("importar", importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
