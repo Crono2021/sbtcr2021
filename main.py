@@ -301,12 +301,15 @@ def ordenar_temas(items):
 
 
 def filtrar_por_letra(topics, letter):
+    """
+    Devuelve lista [(tid, info), ...] filtrada por primera letra.
+    letter: 'A'..'Z' o '#'
+    Usa la letra base normalizada (Á -> A, É -> E, etc).
+    """
     letter = letter.upper()
     filtrados = []
 
     for tid, info in topics.items():
-        if info.get("is_pelis"):
-            continue
         nombre = info.get("name", "")
         nombre_strip = nombre.strip()
         if not nombre_strip:
@@ -317,6 +320,7 @@ def filtrar_por_letra(topics, letter):
             continue
 
         if letter == "#":
+            # Todo lo que NO empiece por A-Z
             if not ("A" <= base <= "Z"):
                 filtrados.append((tid, info))
         else:
@@ -561,7 +565,7 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Ordenamos por created_at descendente
-    items = [(tid,info) for tid,info in topics.items() if not info.get('is_pelis')]
+    items = list(topics.items())
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
     items = items[:RECENT_LIMIT]
 
@@ -708,7 +712,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_lower = query_text.lower()
         matches = [
             (tid, info)
-            for tid, info in topics.items() if not info.get('is_pelis')
+            for tid, info in topics.items()
             if query_lower in info.get("name", "").lower()
         ]
 
@@ -745,7 +749,6 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
 # ======================================================
-
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -760,49 +763,24 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("📨 Enviando contenido del tema...")
 
-    import asyncio
-    from telegram.error import RetryAfter, BadRequest
-
     bot = context.bot
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
+    # El orden ya es cronológico por cómo se van registrando
+
     enviados = 0
 
-    delay = 0.12
-    ruptura = 150
-    pausa_larga = 1.5
-
     for mid in mensajes:
-        while True:
-            try:
-                await bot.forward_message(
-                    chat_id=user_id,
-                    from_chat_id=GROUP_ID,
-                    message_id=mid,
-                )
-                enviados += 1
-                await asyncio.sleep(delay)
-
-                if enviados % ruptura == 0:
-                    try:
-                        fantasma = await bot.send_message(chat_id=user_id, text="‎")
-                        await asyncio.sleep(pausa_larga)
-                        try:
-                            await fantasma.delete()
-                        except:
-                            pass
-                    except:
-                        pass
-
-                break
-
-            except RetryAfter as e:
-                await asyncio.sleep(int(e.retry_after)+1)
-            except BadRequest:
-                break
-            except Exception:
-                break
+        try:
+            await bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=GROUP_ID,
+                message_id=mid,
+            )
+            enviados += 1
+        except Exception as e:
+            print(f"[send_topic] ERROR reenviando {mid}: {e}")
 
     await bot.send_message(
         chat_id=user_id,
@@ -813,6 +791,9 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ======================================================
+#   CALLBACK → enviar UNA película concreta
+# ======================================================
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1279,160 +1260,6 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 #   MAIN
 # ======================================================
-# ============================
-#   /EXPORTAR y /IMPORTAR
-# ============================
-async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-    if not TOPICS_FILE.exists():
-        await update.message.reply_text("No existe topics.json.")
-        return
-    await update.message.reply_document(document=open(TOPICS_FILE, "rb"), filename="topics.json")
-
-async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-
-    if not update.message.reply_to_message or not update.message.reply_to_message.document:
-        await update.message.reply_text("❌ Debes responder a un archivo JSON con /importar")
-        return
-
-    doc = update.message.reply_to_message.document
-    if not doc.file_name.endswith(".json"):
-        await update.message.reply_text("❌ El archivo debe ser .json")
-        return
-
-    file = await doc.get_file()
-    data = await file.download_as_bytearray()
-    try:
-        # Validate JSON
-        json.loads(data.decode("utf-8"))
-        with open(TOPICS_FILE, "wb") as f:
-            f.write(data)
-        await update.message.reply_text("✔ Base de datos importada correctamente.")
-    except Exception as e:
-        await update.message.reply_text("❌ Error al importar el JSON.")
-
-
-
-
-# ===== OCULTAR TEMA FEATURE =====
-async def ocultartema(update, context):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
-        return
-    topics = load_topics()
-    if not topics:
-        await update.message.reply_text("📭 No hay temas para ocultar.")
-        return
-    await update.message.reply_text(
-        "🙈 <b>Ocultar temas</b>\nElige una letra.",
-        parse_mode="HTML",
-        reply_markup=build_ocultar_main_keyboard(),
-    )
-
-def build_ocultar_main_keyboard():
-    rows=[]
-    letters=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    for i in range(0,len(letters),5):
-        chunk=letters[i:i+5]
-        rows.append([InlineKeyboardButton(l,callback_data=f"oc_letter:{l}") for l in chunk])
-    rows.append([InlineKeyboardButton("#",callback_data="oc_letter:#")])
-    rows.append([InlineKeyboardButton("🔙 Volver",callback_data="main_menu")])
-    return InlineKeyboardMarkup(rows)
-
-
-def build_ocultar_letter_page(letter, page, topics_dict):
-    base_list = filtrar_por_letra(topics_dict, letter)
-    filtrados = [(tid, info) for tid, info in base_list if not info.get("hidden")]
-
-    total = len(filtrados)
-    if total == 0:
-        return (
-            f"📭 No hay temas visibles que empiecen por <b>{escape(letter)}</b>.",
-            build_ocultar_main_keyboard(),
-        )
-
-    import math
-    total_pages = max(1, math.ceil(total / PAGE_SIZE))
-    page = max(1, min(page, total_pages))
-
-    start = (page - 1) * PAGE_SIZE
-    end = start + PAGE_SIZE
-    slice_items = filtrados[start:end]
-
-    keyboard = []
-    for tid, info in slice_items:
-        safe_name = escape(info.get("name", ""))
-        keyboard.append([
-            InlineKeyboardButton(
-                f"🙈 Ocultar: {safe_name}",
-                callback_data=f"ocultar:{tid}"
-            )
-        ])
-
-    nav = []
-    if total_pages > 1:
-        if page > 1:
-            nav.append(InlineKeyboardButton("⬅️", callback_data=f"oc_page:{letter}:{page-1}"))
-        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
-        if page < total_pages:
-            nav.append(InlineKeyboardButton("➡️", callback_data=f"oc_page:{letter}:{page+1}"))
-    if nav:
-        keyboard.append(nav)
-
-    keyboard.append([InlineKeyboardButton("🔤 Elegir otra letra", callback_data="oc_main")])
-    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="main_menu")])
-
-    text = (
-    f"🙈 <b>Temas por '{escape(letter)}'</b>
-"
-    f"Mostrando {len(slice_items)} de {total}."
-)
-return text, InlineKeyboardMarkup(keyboard)
-
-
-
-async def on_oc_main(update, context):
-    q=update.callback_query; await q.answer()
-    await q.edit_message_text(
-        "🙈 <b>Ocultar temas</b>\nElige una letra.",
-        parse_mode="HTML",
-        reply_markup=build_ocultar_main_keyboard()
-    )
-
-async def on_oc_letter(update, context):
-    q=update.callback_query; await q.answer()
-    _,letter=q.data.split(":",1)
-    topics=load_topics()
-    text,markup=build_ocultar_letter_page(letter,1,topics)
-    await q.edit_message_text(text=text,parse_mode="HTML",reply_markup=markup)
-
-async def on_oc_page(update, context):
-    q=update.callback_query; await q.answer()
-    _,letter,page_str=q.data.split(":")
-    page=int(page_str)
-    topics=load_topics()
-    text,markup=build_ocultar_letter_page(letter,page,topics)
-    await q.edit_message_text(text=text,parse_mode="HTML",reply_markup=markup)
-
-async def ocultar_topic(update, context):
-    q=update.callback_query; await q.answer()
-    if q.from_user.id!=OWNER_ID:
-        await q.edit_message_text("⛔ No tienes permiso.")
-        return
-    _,tid=q.data.split(":",1)
-    topics=load_topics()
-    if tid not in topics:
-        await q.edit_message_text("❌ Ese tema ya no existe.")
-        return
-    topics[tid]["hidden"]=True
-    save_topics(topics)
-    await q.edit_message_text(f"🙈 Tema ocultado:\n<b>{escape(topics[tid]['name'])}</b>", parse_mode="HTML")
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1447,13 +1274,6 @@ def main():
     app.add_handler(CommandHandler("silencio", silencio))
     app.add_handler(CommandHandler("activar", activar))
     app.add_handler(CommandHandler("usuarios", usuarios))
-    app.add_handler(CommandHandler("exportar", exportar))
-    app.add_handler(CommandHandler("importar", importar))
-    app.add_handler(CommandHandler("ocultartema", ocultartema))
-    app.add_handler(CallbackQueryHandler(on_oc_main, pattern=r"^oc_main$"))
-    app.add_handler(CallbackQueryHandler(on_oc_letter, pattern=r"^oc_letter:"))
-    app.add_handler(CallbackQueryHandler(on_oc_page, pattern=r"^oc_page:"))
-    app.add_handler(CallbackQueryHandler(ocultar_topic, pattern=r"^ocultar:"))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
