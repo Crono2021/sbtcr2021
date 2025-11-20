@@ -749,7 +749,6 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   REENVÍO ORDENADO (SOLO FORWARD, SIN COPY)
 #   + Botón volver al catálogo
 # ======================================================
-
 async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -768,45 +767,20 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
+    # El orden ya es cronológico por cómo se van registrando
+
     enviados = 0
 
-    delay = 0.12
-    ruptura = 150
-    pausa_larga = 1.5
-
     for mid in mensajes:
-        while True:
-            try:
-                await bot.forward_message(
-                    chat_id=user_id,
-                    from_chat_id=GROUP_ID,
-                    message_id=mid,
-                )
-                enviados += 1
-
-                await asyncio.sleep(delay)
-
-                if enviados % ruptura == 0:
-                    try:
-                        fantasma = await bot.send_message(chat_id=user_id, text="‎")
-                        await asyncio.sleep(pausa_larga)
-                        try:
-                            await fantasma.delete()
-                        except:
-                            pass
-                    except Exception:
-                        pass
-
-                break
-
-            except RetryAfter as e:
-                await asyncio.sleep(int(e.retry_after)+1)
-
-            except BadRequest:
-                break
-
-            except Exception:
-                break
+        try:
+            await bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=GROUP_ID,
+                message_id=mid,
+            )
+            enviados += 1
+        except Exception as e:
+            print(f"[send_topic] ERROR reenviando {mid}: {e}")
 
     await bot.send_message(
         chat_id=user_id,
@@ -817,6 +791,9 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ======================================================
+#   CALLBACK → enviar UNA película concreta
+# ======================================================
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
