@@ -767,31 +767,26 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     mensajes = [m["id"] for m in topics[topic_id]["messages"]]
+    # El orden ya es cronológico por cómo se van registrando
 
     enviados = 0
 
     for mid in mensajes:
-        while True:
-            try:
-                await bot.forward_message(
-                    chat_id=user_id,
-                    from_chat_id=GROUP_ID,
-                    message_id=mid,
-                )
-                enviados += 1
-                await asyncio.sleep(0.12)
-                break
-            except RetryAfter as e:
-                await asyncio.sleep(int(e.retry_after)+1)
-            except Exception:
-                break
+        try:
+            await bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=GROUP_ID,
+                message_id=mid,
+            )
+            enviados += 1
+        except Exception as e:
+            print(f"[send_topic] ERROR reenviando {mid}: {e}")
 
     await bot.send_message(
         chat_id=user_id,
         text=f"✔ Envío completado. {enviados} mensajes reenviados 🎉",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]]
-        ),
         ),
     )
 
@@ -1268,33 +1263,52 @@ async def on_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def exportar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso.")
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
         return
     if not TOPICS_FILE.exists():
-        await update.message.reply_text("No existe topics.json")
+        await update.message.reply_text("❌ No existe topics.json en la base de datos.")
         return
-    await update.message.reply_document(document=open(TOPICS_FILE,"rb"), filename="topics.json")
+    try:
+        await update.message.reply_document(
+            document=open(TOPICS_FILE, "rb"),
+            filename="topics.json",
+            caption="📦 Exportación de topics.json completada."
+        )
+    except Exception as e:
+        print("[exportar] ERROR:", e)
+        await update.message.reply_text("❌ Error al enviar topics.json.")
+
 
 async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("⛔ No tienes permiso.")
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
         return
-    msg=update.message
+    msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.document:
-        await msg.reply_text("Responde a un archivo topics.json con /importar")
+        await msg.reply_text(
+            "❌ Debes responder al archivo topics.json con el comando /importar.
+"
+            "Ejemplo:
+1️⃣ Me envías el archivo
+2️⃣ Respondes al archivo con: /importar"
+        )
         return
-    doc=msg.reply_to_message.document
-    if doc.file_name!="topics.json":
-        await msg.reply_text("El archivo debe llamarse topics.json")
+    doc = msg.reply_to_message.document
+    if doc.file_name != "topics.json":
+        await msg.reply_text("❌ El archivo debe llamarse exactamente: topics.json")
         return
-    file=await doc.get_file()
-    path="/tmp/topics.json"
-    await file.download_to_drive(path)
-    with open(path,"r",encoding="utf-8") as f:
-        data=json.load(f)
-    with open(TOPICS_FILE,"w",encoding="utf-8") as f:
-        json.dump(data,f,indent=4,ensure_ascii=False)
-    await msg.reply_text("✔ topics.json importado correctamente.")
+    try:
+        file = await doc.get_file()
+        temp_path = "/tmp/topics.json"
+        await file.download_to_drive(temp_path)
+        with open(temp_path, "r", encoding="utf-8") as f:
+            new_topics = json.load(f)
+        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_topics, f, indent=4, ensure_ascii=False)
+        await msg.reply_text("✔ Base de datos importada correctamente (topics.json reemplazado).")
+    except Exception as e:
+        print("[importar] ERROR:", e)
+        await msg.reply_text("❌ Hubo un error importando el archivo.")
 
 
 def main():
