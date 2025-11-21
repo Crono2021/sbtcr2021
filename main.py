@@ -39,6 +39,8 @@ PAGE_SIZE = 30
 RECENT_LIMIT = 20
 # Límite de resultados en búsqueda de películas (sin paginación de momento)
 PELIS_RESULT_LIMIT = 70
+# Tamaño de página (películas por página en resultados de búsqueda)
+MOVIES_PAGE_SIZE = 20
 # Tamaño de página para listado de usuarios
 USERS_PAGE_SIZE = 30
 
@@ -60,6 +62,13 @@ def get_first_and_base(name: str):
     decomp = unicodedata.normalize("NFD", first)
     base = decomp[0].upper()
     return first, base
+
+
+def fix_text(s: str) -> str:
+    """Normaliza texto para que los acentos y caracteres especiales se vean bien."""
+    if not s:
+        return ""
+    return unicodedata.normalize("NFC", s)
 
 
 # ======================================================
@@ -224,7 +233,7 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await msg.reply_text(
-                f"📄 Tema detectado y guardado:\n<b>{escape(topic_name)}</b>",
+                f"📄 Tema detectado y guardado:\n<b>{escape(fix_text(topic_name))}</b>",
                 parse_mode="HTML",
             )
         except Exception as e:
@@ -427,7 +436,7 @@ def build_letter_page(letter, page, topics_dict):
     keyboard = []
     for tid, info in slice_items:
         name = info.get("name", "")
-        safe_name = escape(name)
+        safe_name = escape(fix_text(name))
         keyboard.append(
             [InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")]
         )
@@ -575,7 +584,7 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for tid, info in items:
-        safe_name = escape(info.get("name", ""))
+        safe_name = escape(fix_text(info.get("name", "")))
         keyboard.append(
             [InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")]
         )
@@ -615,6 +624,68 @@ async def on_pelis_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         print("[on_pelis_btn] Error editando mensaje:", e)
+
+
+# ======================================================
+#   Paginación de resultados de películas
+# ======================================================
+def build_pelis_page(page: int, results: list, topic_id: str, original_query: str | None = None):
+    total = len(results)
+    if total == 0:
+        text = "🍿 No hay resultados de películas para mostrar."
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]]
+        )
+        return text, markup
+
+    total_pages = max(1, math.ceil(total / MOVIES_PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * MOVIES_PAGE_SIZE
+    end_idx = start_idx + MOVIES_PAGE_SIZE
+    slice_items = results[start_idx:end_idx]
+
+    keyboard = []
+    for mid, title in slice_items:
+        safe_title = escape(fix_text(title))
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"🎬 {safe_title}",
+                    callback_data=f"pelis_msg:{topic_id}:{mid}",
+                )
+            ]
+        )
+
+    # Navegación
+    nav_row = []
+    if total_pages > 1:
+        if page > 1:
+            nav_row.append(
+                InlineKeyboardButton("⬅️", callback_data=f"pelis_page:{page-1}")
+            )
+        nav_row.append(
+            InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop")
+        )
+        if page < total_pages:
+            nav_row.append(
+                InlineKeyboardButton("➡️", callback_data=f"pelis_page:{page+1}")
+            )
+    if nav_row:
+        keyboard.append(nav_row)
+
+    keyboard.append(
+        [InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]
+    )
+
+    if original_query:
+        header = f"🍿 Resultados para: <b>{escape(fix_text(original_query))}</b>\n"
+    else:
+        header = "🍿 Resultados de películas\n"
+
+    text = header + f"Página {page}/{total_pages} (mostrando {len(slice_items)} de {total})."
+
+    return text, InlineKeyboardMarkup(keyboard)
 
 
 # ======================================================
@@ -688,27 +759,17 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         matches.sort(key=lambda x: x[1].lower())
         matches = matches[:PELIS_RESULT_LIMIT]
 
-        keyboard = []
-        for mid, title in matches:
-            safe_title = escape(title)
-            # Callback incluye topic_id + message_id
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        f"🎬 {safe_title}",
-                        callback_data=f"pelis_msg:{pelis_tid}:{mid}",
-                    )
-                ]
-            )
+        # Guardamos resultados en la sesión del usuario para paginación
+        context.user_data["pelis_results"] = matches
+        context.user_data["pelis_topic_id"] = pelis_tid
+        context.user_data["pelis_query"] = query_text
 
-        keyboard.append(
-            [InlineKeyboardButton("🔙 Volver", callback_data="main_menu")]
-        )
+        text, markup = build_pelis_page(1, matches, pelis_tid, query_text)
 
         await chat.send_message(
-            f"🍿 Resultados para: <b>{escape(query_text)}</b>",
+            text,
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=markup,
         )
 
     else:
@@ -733,7 +794,7 @@ async def search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for tid, info in matches:
-            safe_name = escape(info.get("name", ""))
+            safe_name = escape(fix_text(info.get("name", "")))
             keyboard.append(
                 [InlineKeyboardButton(f"🎬 {safe_name}", callback_data=f"t:{tid}")]
             )
@@ -876,6 +937,44 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
+
+
+async def on_pelis_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Paginación de resultados de búsqueda de películas."""
+    query = update.callback_query
+    await query.answer()
+
+    _, page_str = query.data.split(":", 1)
+    try:
+        page = int(page_str)
+    except ValueError:
+        await query.edit_message_text(
+            "❌ Página no válida.",
+            parse_mode="HTML",
+        )
+        return
+
+    results = context.user_data.get("pelis_results") or []
+    topic_id = context.user_data.get("pelis_topic_id")
+    original_query = context.user_data.get("pelis_query")
+
+    if not results or not topic_id:
+        await query.edit_message_text(
+            "❌ No hay resultados de películas para paginar.",
+            parse_mode="HTML",
+        )
+        return
+
+    text, markup = build_pelis_page(page, results, topic_id, original_query)
+
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except Exception as e:
+        print("[on_pelis_page] Error editando mensaje:", e)
 
 
 # ======================================================
@@ -1103,7 +1202,7 @@ def build_borrartema_letter_page(letter, page, topics_dict):
 
     keyboard = []
     for tid, info in slice_items:
-        safe_name = escape(info.get("name", ""))
+        safe_name = escape(fix_text(info.get("name", "")))
         keyboard.append(
             [InlineKeyboardButton(f"❌ {safe_name}", callback_data=f"del:{tid}")]
         )
@@ -1270,12 +1369,12 @@ def build_users_page(page: int, users_dict: dict):
 
     lines = [f"👥 <b>Usuarios registrados</b> (total: {total})\n"]
     for idx, (uid, info) in enumerate(slice_items, start=start_idx + 1):
-        name = info.get("name", "")
-        username = info.get("username", "")
+        name = fix_text(info.get("name", ""))
+        username = fix_text(info.get("username", ""))
         if username:
-            line = f"{idx}. {escape(name)} ({escape(username)})"
+            line = f"{idx}. {escape(name)} [{uid}] ({escape(username)})"
         else:
-            line = f"{idx}. {escape(name)}"
+            line = f"{idx}. {escape(name)} [{uid}]"
         lines.append(line)
 
     text = "\n".join(lines)
@@ -1412,6 +1511,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_search_btn, pattern=r"^search$"))
     app.add_handler(CallbackQueryHandler(on_recent_btn, pattern=r"^recent$"))
     app.add_handler(CallbackQueryHandler(on_pelis_btn, pattern=r"^pelis$"))
+    app.add_handler(CallbackQueryHandler(on_pelis_page, pattern=r"^pelis_page:"))
 
     # Callbacks borrado temas (por letra / página)
     app.add_handler(CallbackQueryHandler(on_del_main, pattern=r"^del_main$"))
