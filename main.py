@@ -1387,8 +1387,11 @@ async def borrarpeli(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     keyboard = [[InlineKeyboardButton(f"❌ {escape(title)}", callback_data=f"delpeli:{pelis_tid}:{mid}")]
                 for mid, title in matches]
-    await msg.reply_text(f"🍿 Películas que coinciden con <b>{escape(query)}</b>:", 
-                         parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    await msg.reply_text(
+        f"🍿 Películas que coinciden con <b>{escape(query)}</b>:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # ======================================================
 #   CALLBACK → borrar película del JSON (solo OWNER)
@@ -1413,9 +1416,11 @@ async def on_delete_peli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     movies = [m for m in movies if m.get("id") != mid]
     topics[topic_id]["movies"] = movies
     save_topics(topics)
-    await query.edit_message_text(f"🗑 Película eliminada.
+    await query.edit_message_text(
+        f"🗑 Película eliminada.
 ID mensaje: {mid}
-Películas restantes: {len(movies)}")
+Películas restantes: {len(movies)}"
+    )
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1434,7 +1439,7 @@ def main():
     app.add_handler(CommandHandler("usuarios", usuarios))
     app.add_handler(CommandHandler("exportar", exportar))
     app.add_handler(CommandHandler("importar", importar))
-    app.add_handler(CommandHandler("borrarpeli", borrarpeli)), importar))
+    app.add_handler(CommandHandler("borrarpeli", borrarpeli))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
@@ -1453,8 +1458,7 @@ def main():
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
-    app.add_handler(CallbackQueryHandler(on_users_page))
-    app.add_handler(CallbackQueryHandler(on_delete_peli, pattern=r"^delpeli:")), pattern=r"^users_page:"))
+    app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^users_page:"))
 
     # Búsqueda por texto en privado (series o pelis según modo)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
