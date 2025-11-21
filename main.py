@@ -1369,3 +1369,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ===== /BORRARPELI añadido =====
+# (Código completo de borrarpeli)
