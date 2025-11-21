@@ -1416,11 +1416,14 @@ async def on_delete_peli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     movies = [m for m in movies if m.get("id") != mid]
     topics[topic_id]["movies"] = movies
     save_topics(topics)
-    await query.edit_message_text(
-        f"🗑 Película eliminada.
-ID mensaje: {mid}
-Películas restantes: {len(movies)}"
+    text = (
+        "🗑 Película eliminada.
+"
+        f"ID mensaje: {mid}
+"
+        f"Películas restantes: {len(movies)}"
     )
+    await query.edit_message_text(text)
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1459,6 +1462,7 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
     app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^users_page:"))
+    app.add_handler(CallbackQueryHandler(on_delete_peli, pattern=r"^delpeli:"))
 
     # Búsqueda por texto en privado (series o pelis según modo)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
