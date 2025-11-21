@@ -821,11 +821,13 @@ async def send_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
 async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, topic_id, mid_str = query.data.split(":", 2)
     topic_id = str(topic_id)
+
     try:
         mid = int(mid_str)
     except ValueError:
@@ -836,11 +838,14 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     try:
+        # Intentamos reenviar la película
         await bot.forward_message(
             chat_id=user_id,
             from_chat_id=GROUP_ID,
             message_id=mid,
         )
+
+        # Si funciona → mensaje normal
         await bot.send_message(
             chat_id=user_id,
             text="🍿 Película enviada.",
@@ -848,9 +853,29 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [[InlineKeyboardButton("🔙 Volver al catálogo", callback_data="main_menu")]]
             ),
         )
+
     except Exception as e:
         print(f"[send_peli_message] ERROR reenviando peli {mid}: {e}")
-        await query.edit_message_text("❌ No se pudo reenviar esa película.")
+
+        # --- 🔥 LIMPIEZA AUTOMÁTICA DEL JSON ---
+        topics = load_topics()
+        if topic_id in topics and "movies" in topics[topic_id]:
+            antes = len(topics[topic_id]["movies"])
+            topics[topic_id]["movies"] = [
+                m for m in topics[topic_id]["movies"] if m.get("id") != mid
+            ]
+            despues = len(topics[topic_id]["movies"])
+            if antes != despues:
+                save_topics(topics)
+                print(f"[send_peli_message] Película {mid} purgada del JSON (ya no existe).")
+
+        await query.edit_message_text(
+            "❌ Esa película ya no existe en el tema.
+"
+            "Ha sido eliminada del catálogo.",
+            parse_mode="HTML",
+        )
+
 
 
 # ======================================================
