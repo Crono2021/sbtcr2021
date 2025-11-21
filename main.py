@@ -871,7 +871,7 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             "❌ Esa película ya no existe en el tema.\n"
-"
+
             "Ha sido eliminada del catálogo.",
             parse_mode="HTML",
         )
