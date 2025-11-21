@@ -1522,7 +1522,7 @@ async def on_delpeli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del movies[idx]
     save_topics(topics)
 
-    await query.edit_message_text(f"✔ Película borrada:
+    await query.edit_message_text(f"✔ Película borrada:\n
 <b>{escape(title)}</b>",parse_mode="HTML")
 
 def main():
