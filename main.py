@@ -404,6 +404,9 @@ async def temas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================
 def build_letter_page(letter, page, topics_dict):
     filtrados = filtrar_por_letra(topics_dict, letter)
+    hidden = get_hidden_topic()
+    if hidden:
+        filtrados = [i for i in filtrados if i[0] != hidden]
 
     total = len(filtrados)
     if total == 0:
@@ -567,7 +570,8 @@ async def on_recent_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ordenamos por created_at descendente
     items = list(topics.items())
     items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
-    items = items[:RECENT_LIMIT]
+    hidden = get_hidden_topic()
+    items = [i for i in items if i[0] != hidden][:RECENT_LIMIT]
 
     keyboard = []
     for tid, info in items:
@@ -999,6 +1003,43 @@ def build_borrartema_main_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
+
+# ======================================================
+#   /OCULTAR — SOLO OWNER, SOLO EN PRIVADO
+# ======================================================
+HIDDEN_FILE = DATA_DIR / "hidden.txt"
+
+def get_hidden_topic():
+    if not HIDDEN_FILE.exists():
+        return None
+    try:
+        return HIDDEN_FILE.read_text().strip()
+    except:
+        return None
+
+def set_hidden_topic(tid: str):
+    HIDDEN_FILE.write_text(tid)
+
+async def ocultar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if msg.from_user.id != OWNER_ID:
+        await msg.reply_text("⛔ No tienes permiso.")
+        return
+    if msg.chat.type != "private":
+        await msg.reply_text("ℹ️ Este comando solo funciona en privado.")
+        return
+    if not context.args:
+        await msg.reply_text("❌ Uso: /ocultar NOMBRE_EXACTO_DEL_TEMA")
+        return
+    nombre = " ".join(context.args).lower()
+    topics = load_topics()
+    for tid, info in topics.items():
+        if info["name"].lower() == nombre:
+            set_hidden_topic(tid)
+            await msg.reply_text(f"✔ Tema ocultado:\n<b>{info['name']}</b>", parse_mode="HTML")
+            return
+    await msg.reply_text("❌ No encontré un tema con ese nombre exacto.")
+
 async def borrartema(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
@@ -1323,152 +1364,58 @@ async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ======================================================
-#   /BORRARPELI — SOLO OWNER (buscar y borrar películas)
+#   /BORRARPELI — solo OWNER, borrar películas del tema pelis
 # ======================================================
 async def borrarpeli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if msg.from_user.id != OWNER_ID:
-        await msg.reply_text("⛔ No tienes permiso.")
-        return
-    if msg.chat.type != "private":
-        await msg.reply_text("ℹ️ Usa este comando en privado.")
+        await msg.reply_text("⛔ No tienes permiso para usar este comando.")
         return
     if not context.args:
-        await msg.reply_text("❌ Uso: /borrarpeli TÍTULO")
+        await msg.reply_text("❌ Uso: /borrarpeli TÍTULO_PARCIAL")
         return
-
     query = " ".join(context.args).lower()
     topics = load_topics()
     pelis_tid = get_pelis_topic_id(topics)
-    if not pelis_tid:
-        await msg.reply_text("🍿 No hay tema de películas configurado.")
+    if not pelis_tid or pelis_tid not in topics:
+        await msg.reply_text("❌ No hay un tema configurado como Películas.")
         return
-
     movies = topics[pelis_tid].get("movies", [])
-    matches = [(i, m) for i, m in enumerate(movies) if query in m.get("title","").lower()]
+    matches = [(m["id"], m["title"]) for m in movies if query in m.get("title","").lower()]
     if not matches:
-        await msg.reply_text("❌ No encontré coincidencias.")
+        await msg.reply_text(f"❌ No encontré películas que coincidan con: {query}")
         return
+    keyboard = [[InlineKeyboardButton(f"❌ {escape(title)}", callback_data=f"delpeli:{pelis_tid}:{mid}")]
+                for mid, title in matches]
+    await msg.reply_text(f"🍿 Películas que coinciden con <b>{escape(query)}</b>:", 
+                         parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    page = 1
-    per_page = 30
-    total = len(matches)
-    total_pages = (total + per_page - 1) // per_page
-
-    def get_page_items(page):
-        start = (page - 1) * per_page
-        end = start + per_page
-        return matches[start:end]
-
-    page_items = get_page_items(page)
-
-    keyboard=[]
-    for idx, m in page_items:
-        title = escape(m.get("title",""))
-        keyboard.append([InlineKeyboardButton(f"❌ {title}", callback_data=f"delpeli:{idx}")])
-
-    nav_row=[]
-    if total_pages > 1:
-        if page > 1:
-            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"delpeli_page:{query}:{page-1}"))
-        nav_row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
-        if page < total_pages:
-            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"delpeli_page:{query}:{page+1}"))
-    if nav_row:
-        keyboard.append(nav_row)
-
-    keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_delpeli")])
-
-    await msg.reply_text(
-        f"🍿 Resultados (página {page}/{total_pages})",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def on_delpeli(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ======================================================
+#   CALLBACK → borrar película del JSON (solo OWNER)
+# ======================================================
+async def on_delete_peli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID:
         await query.edit_message_text("⛔ No tienes permiso.")
         return
-
-    data = query.data
-    if data == "cancel_delpeli":
-        await query.edit_message_text("❌ Cancelado.")
-        return
-
-    if data.startswith("delpeli_page:"):
-        _, q, p = data.split(":",2)
-        page = int(p)
-        topics = load_topics()
-        pelis_tid = get_pelis_topic_id(topics)
-        movies = topics[pelis_tid].get("movies", [])
-        matches = [(i, m) for i, m in enumerate(movies) if q in m.get("title","").lower()]
-
-        per_page = 30
-        total = len(matches)
-        total_pages = (total + per_page - 1) // per_page
-
-        def get_page_items(page):
-            start = (page - 1) * per_page
-            end = start + per_page
-            return matches[start:end]
-
-        page_items = get_page_items(page)
-
-        keyboard=[]
-        for idx, m in page_items:
-            title = escape(m.get("title",""))
-            keyboard.append([InlineKeyboardButton(f"❌ {title}", callback_data=f"delpeli:{idx}")])
-
-        nav_row=[]
-        if total_pages > 1:
-            if page > 1:
-                nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"delpeli_page:{q}:{page-1}"))
-            nav_row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
-            if page < total_pages:
-                nav_row.append(InlineKeyboardButton("➡️", callback_data=f"delpeli_page:{q}:{page+1}"))
-        if nav_row:
-            keyboard.append(nav_row)
-
-        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_delpeli")])
-
-        try:
-            await query.edit_message_text(
-                f"🍿 Resultados (página {page}/{total_pages})",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except:
-            pass
-        return
-
-    _, idx_str = data.split(":",1)
+    _, topic_id, mid_str = query.data.split(":", 2)
     try:
-        idx=int(idx_str)
+        mid = int(mid_str)
     except:
-        await query.edit_message_text("❌ Error índice.")
+        await query.edit_message_text("❌ ID inválido.")
         return
-
     topics = load_topics()
-    pelis_tid = get_pelis_topic_id(topics)
-    if not pelis_tid:
-        await query.edit_message_text("❌ Sin tema de películas.")
+    if topic_id not in topics:
+        await query.edit_message_text("❌ El tema de películas ya no existe.")
         return
-
-    movies = topics[pelis_tid].get("movies", [])
-    if idx<0 or idx>=len(movies):
-        await query.edit_message_text("❌ Fuera de rango.")
-        return
-
-    title = movies[idx].get("title","(sin título)")
-    del movies[idx]
+    movies = topics[topic_id].get("movies", [])
+    movies = [m for m in movies if m.get("id") != mid]
+    topics[topic_id]["movies"] = movies
     save_topics(topics)
-
-    await query.edit_message_text(f"✔ Película borrada:
-<b>{escape(title)}</b>", parse_mode="HTML")
-
+    await query.edit_message_text(f"🗑 Película eliminada.
+ID mensaje: {mid}
+Películas restantes: {len(movies)}")
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1478,6 +1425,7 @@ def main():
     app.add_handler(CommandHandler("temas", temas))
 
     # Comandos solo owner
+    app.add_handler(CommandHandler("ocultar", ocultar))
     app.add_handler(CommandHandler("borrartema", borrartema))
     app.add_handler(CommandHandler("reiniciar_db", reiniciar_db))
     app.add_handler(CommandHandler("setpelis", setpelis))
@@ -1486,6 +1434,7 @@ def main():
     app.add_handler(CommandHandler("usuarios", usuarios))
     app.add_handler(CommandHandler("exportar", exportar))
     app.add_handler(CommandHandler("importar", importar))
+    app.add_handler(CommandHandler("borrarpeli", borrarpeli)), importar))
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
@@ -1504,7 +1453,8 @@ def main():
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
-    app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^users_page:"))
+    app.add_handler(CallbackQueryHandler(on_users_page))
+    app.add_handler(CallbackQueryHandler(on_delete_peli, pattern=r"^delpeli:")), pattern=r"^users_page:"))
 
     # Búsqueda por texto en privado (series o pelis según modo)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text))
