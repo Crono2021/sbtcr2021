@@ -1337,6 +1337,9 @@ def main():
     app.add_handler(CommandHandler("usuarios", usuarios))
     app.add_handler(CommandHandler("exportar", exportar))
     app.add_handler(CommandHandler("importar", importar))
+    app.add_handler(CommandHandler("borrarpeli", borrarpeli))
+    app.add_handler(CallbackQueryHandler(on_delpeli, pattern=r"^delpeli"))
+
 
     # Callbacks navegación general
     app.add_handler(CallbackQueryHandler(on_letter, pattern=r"^letter:"))
@@ -1369,7 +1372,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# ===== /BORRARPELI añadido =====
-# (Código completo de borrarpeli)
