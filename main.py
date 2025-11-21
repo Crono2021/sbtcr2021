@@ -1321,103 +1321,6 @@ async def importar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Error al importar el JSON.")
 
 
-# ======================================================
-#   CALLBACKS PARA BORRAR PELÍCULAS
-# ======================================================
-
-async def on_delpeli(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.from_user.id != OWNER_ID:
-        await query.edit_message_text("⛔ No tienes permiso.")
-        return
-
-    data = query.data
-
-    # cancelar
-    if data == "cancel_delpeli":
-        await query.edit_message_text("❌ Cancelado.")
-        return
-
-    # paginación
-    if data.startswith("delpeli_page:"):
-        _, q, p = data.split(":", 2)
-        page = int(p)
-
-        topics = load_topics()
-        pelis_tid = get_pelis_topic_id(topics)
-        movies = topics[pelis_tid].get("movies", [])
-
-        matches = [(i, m) for i, m in enumerate(movies) if q in m.get("title", "").lower()]
-
-        per_page = 30
-        total = len(matches)
-        total_pages = (total + per_page - 1) // per_page
-
-        def get_page_items(page):
-            start = (page - 1) * per_page
-            end = start + per_page
-            return matches[start:end]
-
-        page_items = get_page_items(page)
-
-        keyboard = []
-        for idx, m in page_items:
-            title = escape(m.get("title", ""))
-            keyboard.append([InlineKeyboardButton(f"❌ {title}", callback_data=f"delpeli:{idx}")])
-
-        nav_row = []
-        if total_pages > 1:
-            if page > 1:
-                nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"delpeli_page:{q}:{page-1}"))
-            nav_row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
-            if page < total_pages:
-                nav_row.append(InlineKeyboardButton("➡️", callback_data=f"delpeli_page:{q}:{page+1}"))
-
-        if nav_row:
-            keyboard.append(nav_row)
-
-        keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="cancel_delpeli")])
-
-        await query.edit_message_text(
-            f"🍿 Resultados (página {page}/{total_pages})",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    # borrar película
-    _, idx_str = data.split(":", 1)
-    try:
-        idx = int(idx_str)
-    except:
-        await query.edit_message_text("❌ Índice inválido.")
-        return
-
-    topics = load_topics()
-    pelis_tid = get_pelis_topic_id(topics)
-
-    if not pelis_tid:
-        await query.edit_message_text("❌ No existe el tema de películas.")
-        return
-
-    movies = topics[pelis_tid].get("movies", [])
-
-    if idx < 0 or idx >= len(movies):
-        await query.edit_message_text("❌ Fuera de rango.")
-        return
-
-    title = movies[idx].get("title", "(sin título)")
-    del movies[idx]
-    save_topics(topics)
-
-    await query.edit_message_text(
-        f"✔ Película borrada:
-<b>{escape(title)}</b>",
-        parse_mode="HTML"
-    )
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1451,7 +1354,6 @@ def main():
     # Callbacks de temas / películas / usuarios
     app.add_handler(CallbackQueryHandler(send_topic, pattern=r"^t:"))
     app.add_handler(CallbackQueryHandler(delete_topic, pattern=r"^del:"))
-    app.add_handler(CallbackQueryHandler(on_delpeli, pattern=r"^delpeli"))
     app.add_handler(CallbackQueryHandler(send_peli_message, pattern=r"^pelis_msg:"))
     app.add_handler(CallbackQueryHandler(on_users_page, pattern=r"^users_page:"))
 
