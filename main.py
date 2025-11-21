@@ -870,7 +870,7 @@ async def send_peli_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"[send_peli_message] Película {mid} purgada del JSON (ya no existe).")
 
         await query.edit_message_text(
-            "❌ Esa película ya no existe en el tema.
+            "❌ Esa película ya no existe en el tema.\n"
 "
             "Ha sido eliminada del catálogo.",
             parse_mode="HTML",
