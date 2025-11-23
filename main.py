@@ -249,16 +249,18 @@ async def detect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Guardar cada mensaje dentro del tema
     topics[topic_id]["messages"].append({"id": msg.message_id})
 
-    # Si es el tema de películas, indexamos por descripción/título
+    # Si es el tema de películas, indexamos con unique_id
     if topics[topic_id].get("is_pelis"):
-        title = msg.caption or msg.text or ""
-        title = title.strip()
-        if title:
+        file_obj = msg.document or msg.video or msg.animation
+        if file_obj:
+            unique_id = file_obj.file_unique_id
+            title = (msg.caption or file_obj.file_name or "").strip()
             topics[topic_id].setdefault("movies", [])
-            topics[topic_id]["movies"].append(
-                {"id": msg.message_id, "title": title}
-            )
-
+            duplicado = any(m.get("unique_id") == unique_id for m in topics[topic_id]["movies"])
+            if not duplicado:
+                topics[topic_id]["movies"].append(
+                    {"id": msg.message_id, "title": title, "unique_id": unique_id}
+                )
     save_topics(topics)
 
 
